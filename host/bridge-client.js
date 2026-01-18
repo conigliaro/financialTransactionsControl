@@ -1,8 +1,24 @@
-// host/bridge-client.js (DEBUG SIMPLE)
+// host/bridge-client.js (DEBUG SIMPLE, CORRECTO)
+//
+// Objetivo:
+// - Log claro al cargar (env + handshake + mensajes que entran)
+// - NO bloquear requests por handshake (como el starter kit)
+// - Auto-boot: si llamas getUserProfile/sendTransaction sin initializeBridge(), igual inicializa
+// - Acepta Bridge v1 (RESULT/ERROR/HOST_CONTEXT) y compat legacy (MBS_*)
+// - Diagnóstico: REQUEST_HOST_CONTEXT automático al boot
+//
+// Uso recomendado desde tu miniapp:
+//   import { initializeBridge, getUserProfile, sendTransactionToHost } from "./host/bridge-client.js";
+//   initializeBridge({ allowedParentOrigin: "https://mybudgetsocial.com" });
+//   const profile = await getUserProfile({ allowedParentOrigin: "https://mybudgetsocial.com" });
+//   await sendTransactionToHost(payload, key, { allowedParentOrigin: "https://mybudgetsocial.com" });
+//
 import { uuidv4 } from "../utils/uuid.js";
 import { normalizeAllowedOrigin } from "./bridge-config.js";
 
 const DEFAULT_TIMEOUT_MS = 8000;
+const DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS = 6000;
+const DIAG_READY_TIMEOUT_MS = 1200;
 
 function safeMessageType(data) {
   if (!data || typeof data !== "object") return null;
@@ -23,7 +39,7 @@ function inferHostWindow() {
 }
 
 export function createBridgeClient({
-  allowedParentOrigin, // REQUIRED: exact host origin (e.g. https://finanzas.verenzuela.com)
+  allowedParentOrigin, // REQUIRED: exact host origin (e.g. https://mybudgetsocial.com)
   parentWindow,
   selfWindow = window,
   defaultTimeoutMs = DEFAULT_TIMEOUT_MS,
@@ -32,6 +48,9 @@ export function createBridgeClient({
   const pending = new Map();
 
   let destroyed = false;
+  let initialized = false;
+
+  // "ready" es solo diagnóstico / UI, NO bloquea requests.
   let ready = false;
   let activeOrigin = null;
 
@@ -43,25 +62,31 @@ export function createBridgeClient({
     // eslint-disable-next-line no-console
     console.log("[bridge]", ...args);
   }
-
   function warn(...args) {
     // eslint-disable-next-line no-console
     console.warn("[bridge]", ...args);
   }
-
-  function err(...args) {
+  function error(...args) {
     // eslint-disable-next-line no-console
     console.error("[bridge]", ...args);
   }
 
   function isReady() {
-    return ready && Boolean(activeOrigin) && Boolean(hostWindow);
+    return ready && Boolean(activeOrigin) && Boolean(hostWindow) && Boolean(allowedOrigin);
   }
 
   function dumpEnv() {
+    const ancestor0 =
+      (window.location?.ancestorOrigins && window.location.ancestorOrigins.length
+        ? window.location.ancestorOrigins[0]
+        : null);
+
     log("boot env", {
+      selfUrl: window.location.href,
       selfOrigin: window.location.origin,
       allowedOrigin,
+      referrer: document.referrer || null,
+      ancestor0,
       hasParent: !!window.parent,
       isIframe: (() => {
         try {
@@ -72,16 +97,21 @@ export function createBridgeClient({
       })(),
       hasOpener: !!window.opener,
       hostWindow: hostWindow ? (hostWindow === window.parent ? "parent" : "opener") : null,
+      hint: "allowedParentOrigin debe ser EXACTAMENTE el ORIGIN del host real (mira ancestor0/referrer).",
     });
   }
 
   function postToHost(message) {
-    if (!hostWindow) throw Object.assign(new Error("NO_HOST_WINDOW"), { code: "NO_HOST_WINDOW" });
-    if (!allowedOrigin) throw Object.assign(new Error("MISSING_ALLOWED_PARENT_ORIGIN"), { code: "MISSING_ALLOWED_PARENT_ORIGIN" });
+    if (!hostWindow) throw Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" });
+    if (!allowedOrigin) throw Object.assign(new Error("allowedParentOrigin is required"), { code: "MISSING_ALLOWED_PARENT_ORIGIN" });
     hostWindow.postMessage(message, allowedOrigin);
   }
 
   function request(msg, timeoutMs) {
+    if (destroyed) {
+      return Promise.reject(Object.assign(new Error("Bridge destroyed"), { code: "BRIDGE_DESTROYED" }));
+    }
+
     const requestId = uuidv4();
     const tms = Math.max(500, Number(timeoutMs ?? defaultTimeoutMs) || DEFAULT_TIMEOUT_MS);
 
@@ -103,16 +133,27 @@ export function createBridgeClient({
     });
   }
 
+  function markHandshake(event, type) {
+    if (ready) return;
+    // Handshake "best-effort": si llega cualquiera, marcamos ready
+    if (type === "HOST_CONTEXT" || type === "BRIDGE_READY" || type === "MBS_BRIDGE_READY" || type === "MBS_HOST_CONTEXT") {
+      ready = true;
+      activeOrigin = event.origin;
+      log("HANDSHAKE OK", { activeOrigin, type });
+    }
+  }
+
   function onMessage(event) {
     if (destroyed) return;
 
     const type = safeMessageType(event.data);
     if (!type) return;
 
-    // LOG crudo (lo que llega)
+    // Log crudo de TODO lo que llega (clave para debug)
     log("message in", {
       type,
       origin: event.origin,
+      expectedOrigin: allowedOrigin || null,
       fromHostWindow: hostWindow ? event.source === hostWindow : null,
       hasRequestId: typeof event.data?.requestId === "string",
       dataKeys: Object.keys(event.data || {}),
@@ -128,7 +169,7 @@ export function createBridgeClient({
       return;
     }
 
-    // 2) source must match hostWindow (si tenemos hostWindow)
+    // 2) source must match hostWindow
     if (!hostWindow) {
       warn("blocked: no hostWindow (not iframe and no opener)");
       return;
@@ -138,13 +179,8 @@ export function createBridgeClient({
       return;
     }
 
-    // 3) handshake: considera ready si llega cualquiera de estos
-    if (!ready && (type === "HOST_CONTEXT" || type === "BRIDGE_READY" || type === "MBS_BRIDGE_READY" || type === "MBS_HOST_CONTEXT")) {
-      ready = true;
-      activeOrigin = event.origin;
-      log("HANDSHAKE OK", { activeOrigin });
-      // no retornamos; puede traer payload + requestId
-    }
+    // 3) handshake best-effort
+    markHandshake(event, type);
 
     // 4) correlación de requests
     const requestId = event.data?.requestId;
@@ -153,6 +189,7 @@ export function createBridgeClient({
     const p = pending.get(requestId);
     if (!p) return;
 
+    // Bridge v1
     if (type === "RESULT") {
       window.clearTimeout(p.timer);
       pending.delete(requestId);
@@ -160,6 +197,7 @@ export function createBridgeClient({
       return;
     }
 
+    // HOST_CONTEXT (cuando lo pides con REQUEST_HOST_CONTEXT)
     if (type === "HOST_CONTEXT") {
       window.clearTimeout(p.timer);
       pending.delete(requestId);
@@ -174,7 +212,7 @@ export function createBridgeClient({
       const raw = event.data?.error;
       const code = typeof raw?.code === "string" ? raw.code : "UNKNOWN";
       const message = typeof raw?.message === "string" ? raw.message : "Unknown host error";
-      const e = Object.assign(new Error(message), { code, raw });
+      const e = Object.assign(new Error(message), { code, raw, requestId, requestType: p.type });
       p.reject(e);
       return;
     }
@@ -192,63 +230,64 @@ export function createBridgeClient({
     dumpEnv();
 
     if (!allowedOrigin) {
-      err("NO CONNECT: allowedParentOrigin inválido o vacío. Debe ser el ORIGIN exacto del host.");
+      error("NO CONNECT: allowedParentOrigin inválido o vacío. Debe ser el ORIGIN exacto del host.");
       return Promise.reject(Object.assign(new Error("allowedParentOrigin is required"), { code: "MISSING_ALLOWED_PARENT_ORIGIN" }));
     }
     if (!hostWindow) {
-      err("NO CONNECT: no hay hostWindow. Debes abrir la miniapp dentro del host (iframe) o desde el host (window.opener).");
+      error("NO CONNECT: no hay hostWindow. Debes abrir la miniapp dentro del host (iframe) o desde el host (window.opener).");
       return Promise.reject(Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" }));
     }
 
-    selfWindow.addEventListener("message", onMessage);
+    if (!initialized) {
+      initialized = true;
+      selfWindow.addEventListener("message", onMessage);
+    }
 
     // 1) enviar ready
     try {
       postToHost({ type: "APP_READY" });
       log("sent APP_READY");
     } catch (e) {
-      err("failed to post APP_READY", e);
+      error("failed to post APP_READY", e);
     }
 
     // 2) ping: pedir host context aunque no estés ready (diagnóstico)
-    // Si el host responde, aquí ya verás en consola qué llega.
-    void request({ type: "REQUEST_HOST_CONTEXT" }, 6000)
+    void request({ type: "REQUEST_HOST_CONTEXT" }, DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS)
       .then((ctx) => log("REQUEST_HOST_CONTEXT OK", ctx))
-      .catch((e) => err("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw }));
+      .catch((e) => error("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw }));
 
-    // 3) timeout de diagnóstico
+    // 3) timeout de diagnóstico (no bloquea funcionalidad)
     window.setTimeout(() => {
       if (isReady()) {
         log("bridge READY ✅", { activeOrigin });
         return;
       }
-      err("bridge NOT READY ❌ (no handshake)", {
+      error("bridge NOT READY ❌ (no handshake)", {
         allowedOrigin,
         hint: [
-          "1) Verifica que allowedParentOrigin sea EXACTAMENTE el origin del host (sin path).",
-          "2) Verifica que realmente estás embebido en iframe dentro de ese host (o abierto desde el host con window.opener).",
-          "3) Revisa en el host si al recibir APP_READY está respondiendo con HOST_CONTEXT/BRIDGE_READY.",
-          "4) Si el host usa otro tipo de handshake, dime cuál mensaje manda.",
+          "1) allowedParentOrigin debe ser EXACTAMENTE el origin del host real (ver ancestor0/referrer).",
+          "2) Debes estar embebido (iframe) o abierto por el host (window.opener). Si opener es null, el host pudo usar noopener.",
+          "3) Revisa en el host si al recibir APP_READY responde con HOST_CONTEXT/BRIDGE_READY.",
         ],
       });
-    }, 1200);
+    }, DIAG_READY_TIMEOUT_MS);
 
     return Promise.resolve({ ok: true });
   }
 
-  // Para tu caso: enviar transacción solo si ready (como antes)
+  // Transacción: NO exige handshake (como el starter kit).
+  // Solo exige que exista hostWindow + allowedOrigin (para poder postMessage).
   async function sendTransactionToHost(payload, idempotencyKey, { timeoutMs } = {}) {
-    if (!isReady()) {
-      const e = Object.assign(new Error("Host not connected"), {
-        code: "HOST_NOT_CONNECTED",
-        debug: { allowedOrigin, activeOrigin, ready, hasHostWindow: !!hostWindow },
-      });
-      throw e;
+    if (!hostWindow) {
+      throw Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" });
+    }
+    if (!allowedOrigin) {
+      throw Object.assign(new Error("allowedParentOrigin is required"), { code: "MISSING_ALLOWED_PARENT_ORIGIN" });
     }
 
-    // Si tu host real NO soporta MBS_SEND_TRANSACTION, aquí se va a quedar en timeout.
-    // Por debug, también te conviene probar CREATE_EXPENSE como el starter kit.
-    const data = await request(
+    // Si tu host NO soporta MBS_SEND_TRANSACTION, esto dará TIMEOUT.
+    // En ese caso prueba con request({type:"CREATE_EXPENSE", payload:{...}}) estilo starter kit.
+    return request(
       {
         type: "MBS_SEND_TRANSACTION",
         payload,
@@ -256,7 +295,6 @@ export function createBridgeClient({
       },
       timeoutMs
     );
-    return data;
   }
 
   // API mínima
@@ -264,8 +302,65 @@ export function createBridgeClient({
     initializeBridge,
     isReady,
     sendTransactionToHost,
-
-    // te dejo request por si quieres probar CREATE_EXPENSE directamente:
     request,
   };
+}
+
+// --- Singleton helpers (para imports tipo: import { getUserProfile } from ...)
+
+let bridgeSingleton = null;
+let bootPromise = null;
+
+function getOrCreateSingleton(opts) {
+  if (!bridgeSingleton) bridgeSingleton = createBridgeClient(opts);
+
+  // Auto-boot (one-shot): garantiza listener + APP_READY + diag ping
+  if (!bootPromise) {
+    bootPromise = bridgeSingleton
+      .initializeBridge()
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.error("[bridge] boot failed", { code: e.code, message: e.message, raw: e.raw });
+        throw e;
+      });
+  }
+
+  return bridgeSingleton;
+}
+
+export async function initializeBridge(opts) {
+  const b = getOrCreateSingleton(opts);
+  await bootPromise;
+  return { ok: true };
+}
+
+export function isBridgeReady() {
+  return Boolean(bridgeSingleton?.isReady?.());
+}
+
+export async function getUserProfile(opts) {
+  const b = getOrCreateSingleton(opts);
+  await bootPromise;
+  return b.request({ type: "GET_USER_PROFILE" }, opts?.timeoutMs);
+}
+
+export async function getHostContext(opts) {
+  const b = getOrCreateSingleton(opts);
+  await bootPromise;
+  return b.request({ type: "REQUEST_HOST_CONTEXT" }, opts?.timeoutMs);
+}
+
+export async function sendTransactionToHost(payload, idempotencyKey, opts) {
+  const b = getOrCreateSingleton(opts);
+  await bootPromise;
+  return b.sendTransactionToHost(payload, idempotencyKey, opts);
+}
+
+export function __resetBridgeForTests() {
+  try {
+    bridgeSingleton = null;
+    bootPromise = null;
+  } catch {
+    // no-op
+  }
 }
