@@ -1,6 +1,5 @@
 // host/bridge-client.js (DEBUG SIMPLE, AUTO-INFER allowedParentOrigin)
-//
-// Exporta lo que finance-app.js espera:
+// Compatible con financie-app.js imports:
 //   import {
 //     getUserProfile,
 //     initializeBridge as initBridge,
@@ -9,12 +8,12 @@
 //     waitForBridgeReady
 //   } from "./host/bridge-client.js";
 //
-// Objetivo:
-// - Log claro al cargar (env + mensajes entrantes)
-// - Auto-infer allowedParentOrigin si NO lo pasan (desde ancestorOrigins/referrer)
-// - NO bloquear requests por "ready" (estilo starter kit)
-// - Bridge v1 (RESULT/ERROR/HOST_CONTEXT) + compat legacy (MBS_*)
-// - Diagnóstico: REQUEST_HOST_CONTEXT automático al boot
+// Importante:
+// - NO usamos MBS_SEND_TRANSACTION por defecto.
+// - sendTransactionToHost() traduce a Bridge v1:
+//     expense -> CREATE_EXPENSE
+//     income  -> CREATE_INCOME
+// - Devuelve { status:'success', remoteTxnId, result } para que finance-app.js no explote.
 //
 import { uuidv4 } from "../utils/uuid.js";
 import { normalizeAllowedOrigin } from "./bridge-config.js";
@@ -30,23 +29,19 @@ function safeMessageType(data) {
 }
 
 function inferHostWindow() {
-  // embedded iframe
   try {
     if (window.parent && window.parent !== window) return window.parent;
   } catch {
     // ignore
   }
-  // standalone popup
   if (window.opener) return window.opener;
   return null;
 }
 
 function inferAllowedOrigin(provided) {
-  // 1) si viene explícito, úsalo
   const fromProvided = normalizeAllowedOrigin(provided);
   if (fromProvided) return fromProvided;
 
-  // 2) mejor fuente en iframes: ancestorOrigins[0]
   try {
     const ao = window.location?.ancestorOrigins;
     if (ao && ao.length) {
@@ -57,15 +52,52 @@ function inferAllowedOrigin(provided) {
     // ignore
   }
 
-  // 3) fallback: referrer
   const fromReferrer = normalizeAllowedOrigin(document.referrer || "");
   if (fromReferrer) return fromReferrer;
 
   return "";
 }
 
+// Mapea tu payload (miniapp) al payload Bridge v1
+function mapToCreateExpensePayload(payload) {
+  const amount = Number(payload?.paidValue ?? payload?.amount);
+  return {
+    amount: Number.isFinite(amount) ? amount : 0,
+    currencyCode: payload?.currencyCode ? String(payload.currencyCode) : undefined,
+    note: payload?.notes ? String(payload.notes) : payload?.vendor ? String(payload.vendor) : undefined,
+    occurredAt: payload?.date ? String(payload.date) : undefined,
+    categoryId: payload?.expenseType ? String(payload.expenseType) : undefined,
+  };
+}
+
+function mapToCreateIncomePayload(payload) {
+  const amount = Number(payload?.paidValue ?? payload?.amount);
+  return {
+    amount: Number.isFinite(amount) ? amount : 0,
+    currencyCode: payload?.currencyCode ? String(payload.currencyCode) : undefined,
+    note: payload?.notes ? String(payload.notes) : payload?.vendor ? String(payload.vendor) : undefined,
+    occurredAt: payload?.date ? String(payload.date) : undefined,
+    categoryId: payload?.expenseType ? String(payload.expenseType) : undefined,
+  };
+}
+
+function pickRemoteTxnId(result, fallback) {
+  const cand =
+    result?.remoteTxnId ??
+    result?.txnId ??
+    result?.transactionId ??
+    result?.id ??
+    result?.uuid ??
+    null;
+
+  if (typeof cand === "string" && cand.trim()) return cand.trim();
+  if (typeof cand === "number" && Number.isFinite(cand)) return String(cand);
+
+  return String(fallback || "");
+}
+
 export function createBridgeClient({
-  allowedParentOrigin, // opcional ahora (se infiere)
+  allowedParentOrigin,
   parentWindow,
   selfWindow = window,
   defaultTimeoutMs = DEFAULT_TIMEOUT_MS,
@@ -76,11 +108,10 @@ export function createBridgeClient({
   let destroyed = false;
   let initialized = false;
 
-  // Ready es diagnóstico / UI; NO bloquea requests
+  // diagnóstico/UI
   let ready = false;
   let activeOrigin = null;
 
-  // OJO: ahora se infiere si no lo pasan
   let allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
   const hostWindow = parentWindow ?? inferHostWindow();
 
@@ -128,7 +159,6 @@ export function createBridgeClient({
       })(),
       hasOpener: !!window.opener,
       hostWindow: hostWindow ? (hostWindow === window.parent ? "parent" : "opener") : null,
-      hint: "Si no pasas allowedParentOrigin, se infiere de ancestor0/referrer. Debe ser ORIGIN exacto (sin path).",
     });
   }
 
@@ -174,13 +204,7 @@ export function createBridgeClient({
 
   function markHandshake(event, type) {
     if (ready) return;
-
-    if (
-      type === "HOST_CONTEXT" ||
-      type === "BRIDGE_READY" ||
-      type === "MBS_BRIDGE_READY" ||
-      type === "MBS_HOST_CONTEXT"
-    ) {
+    if (type === "HOST_CONTEXT" || type === "BRIDGE_READY") {
       ready = true;
       activeOrigin = event.origin;
       log("HANDSHAKE OK", { activeOrigin, type });
@@ -193,7 +217,6 @@ export function createBridgeClient({
     const type = safeMessageType(event.data);
     if (!type) return;
 
-    // Log crudo
     log("message in", {
       type,
       origin: event.origin,
@@ -203,13 +226,11 @@ export function createBridgeClient({
       dataKeys: Object.keys(event.data || {}),
     });
 
-    // Si por alguna razón allowedOrigin aún no existe, intenta inferirlo aquí (último chance)
     if (!allowedOrigin) {
       allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
       warn("allowedOrigin was empty; inferred now:", allowedOrigin || null);
     }
 
-    // 1) origin must match allowedOrigin
     if (!allowedOrigin) {
       warn("blocked: missing allowedOrigin (no provided + no inferable)");
       return;
@@ -219,7 +240,6 @@ export function createBridgeClient({
       return;
     }
 
-    // 2) source must match hostWindow
     if (!hostWindow) {
       warn("blocked: no hostWindow (not iframe and no opener)");
       return;
@@ -229,17 +249,14 @@ export function createBridgeClient({
       return;
     }
 
-    // 3) handshake best-effort
     markHandshake(event, type);
 
-    // 4) correlación requestId
     const requestId = event.data?.requestId;
     if (typeof requestId !== "string") return;
 
     const p = pending.get(requestId);
     if (!p) return;
 
-    // Bridge v1
     if (type === "RESULT") {
       window.clearTimeout(p.timer);
       pending.delete(requestId);
@@ -272,26 +289,14 @@ export function createBridgeClient({
       p.reject(e);
       return;
     }
-
-    // Compat legacy
-    if (type === "MBS_SEND_TRANSACTION_RESULT" || type === "MBS_SEND_TRANSACTION_RESPONSE") {
-      window.clearTimeout(p.timer);
-      pending.delete(requestId);
-      p.resolve(event.data);
-      return;
-    }
   }
 
   function initializeBridge() {
-    // Refresca allowedOrigin justo al boot (por si llamaron init sin opts)
     allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
-
     dumpEnv();
 
     if (!allowedOrigin) {
-      error(
-        "NO CONNECT: allowedParentOrigin vacío/no inferible. Pasa allowedParentOrigin o revisa ancestorOrigins/referrer."
-      );
+      error("NO CONNECT: allowedParentOrigin vacío/no inferible.");
       return Promise.reject(
         Object.assign(new Error("allowedParentOrigin is required"), {
           code: "MISSING_ALLOWED_PARENT_ORIGIN",
@@ -300,9 +305,7 @@ export function createBridgeClient({
     }
 
     if (!hostWindow) {
-      error(
-        "NO CONNECT: no hay hostWindow. Debes abrir la miniapp dentro del host (iframe) o desde el host (window.opener)."
-      );
+      error("NO CONNECT: no hay hostWindow (iframe/opener).");
       return Promise.reject(
         Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" })
       );
@@ -313,7 +316,6 @@ export function createBridgeClient({
       selfWindow.addEventListener("message", onMessage);
     }
 
-    // 1) enviar APP_READY
     try {
       postToHost({ type: "APP_READY" });
       log("sent APP_READY to", allowedOrigin);
@@ -321,14 +323,10 @@ export function createBridgeClient({
       error("failed to post APP_READY", e);
     }
 
-    // 2) ping diagnóstico
     void request({ type: "REQUEST_HOST_CONTEXT" }, DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS)
       .then((ctx) => log("REQUEST_HOST_CONTEXT OK", ctx))
-      .catch((e) =>
-        error("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw })
-      );
+      .catch((e) => error("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw }));
 
-    // 3) timeout de diagnóstico
     window.setTimeout(() => {
       if (isReady()) {
         log("bridge READY ✅", { activeOrigin });
@@ -337,9 +335,9 @@ export function createBridgeClient({
       error("bridge NOT READY ❌ (no handshake)", {
         allowedOrigin,
         hint: [
-          "1) allowedOrigin inferido debe ser el ORIGIN exacto del host (sin path).",
-          "2) Debes estar embebido (iframe) o abierto por el host (window.opener). Si opener es null, el host pudo usar noopener.",
-          "3) Verifica en el host que al recibir APP_READY responde con HOST_CONTEXT/BRIDGE_READY.",
+          "1) allowedOrigin debe ser ORIGIN exacto (sin path).",
+          "2) Debes estar en iframe u opener (si opener=null, el host pudo usar noopener).",
+          "3) El host debe responder a APP_READY con HOST_CONTEXT/BRIDGE_READY.",
         ],
       });
     }, DIAG_READY_TIMEOUT_MS);
@@ -347,6 +345,7 @@ export function createBridgeClient({
     return Promise.resolve({ ok: true, allowedOrigin });
   }
 
+  // IMPORTANTE: implementado en Bridge v1 (starter kit), NO MBS_*
   async function sendTransactionToHost(payload, idempotencyKey, { timeoutMs } = {}) {
     if (!hostWindow) {
       throw Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" });
@@ -357,15 +356,32 @@ export function createBridgeClient({
       });
     }
 
-    // Si el host NO soporta MBS_SEND_TRANSACTION, esto termina en TIMEOUT (y lo verás en consola)
-    return request(
-      {
-        type: "MBS_SEND_TRANSACTION",
-        payload,
-        idempotencyKey: String(idempotencyKey || ""),
-      },
-      timeoutMs
-    );
+    const txnType = String(payload?.txnType || "").toLowerCase();
+    const isIncome = txnType === "income";
+    const isExpense = txnType === "expense" || !txnType;
+
+    const msgType = isIncome ? "CREATE_INCOME" : "CREATE_EXPENSE";
+    const v1Payload = isIncome ? mapToCreateIncomePayload(payload) : mapToCreateExpensePayload(payload);
+
+    // Validación mínima para que el host no te devuelva ERROR por tonterías
+    if (!Number.isFinite(Number(v1Payload.amount)) || Number(v1Payload.amount) <= 0) {
+      const e = Object.assign(new Error("Invalid amount (must be > 0)"), { code: "VALIDATION" });
+      e.responsePayload = { v1Payload, original: payload };
+      throw e;
+    }
+
+    // Bridge v1 responde RESULT con un objeto de transacción
+    const result = await request({ type: msgType, payload: v1Payload }, timeoutMs);
+
+    // Adapter: tu finance-app.js espera {status:'success', remoteTxnId}
+    const remoteTxnId = pickRemoteTxnId(result, idempotencyKey || uuidv4());
+
+    return {
+      status: "success",
+      remoteTxnId,
+      result, // útil para debug/telemetría
+      _meta: { msgType, usedBridgeV1: true, originalTxnType: isIncome ? "income" : "expense" },
+    };
   }
 
   return {
@@ -431,12 +447,6 @@ export async function getUserProfile(opts = {}) {
   const b = getOrCreateSingleton(opts);
   await bootPromise;
   return b.request({ type: "GET_USER_PROFILE" }, opts.timeoutMs);
-}
-
-export async function getHostContext(opts = {}) {
-  const b = getOrCreateSingleton(opts);
-  await bootPromise;
-  return b.request({ type: "REQUEST_HOST_CONTEXT" }, opts.timeoutMs);
 }
 
 export async function sendTransactionToHost(payload, idempotencyKey, opts = {}) {

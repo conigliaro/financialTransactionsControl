@@ -1,3 +1,5 @@
+// financie-app.js
+
 import { db } from './db/indexeddb.js';
 import { loadTranslations, setLanguage as i18nSetLanguage, t } from './i18n/loader.js';
 import './components/ll-app.js';
