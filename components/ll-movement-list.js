@@ -10,6 +10,7 @@ class LlMovementList extends HTMLElement {
     this._currencyCode = 'EUR';
     this._query = '';
     this._filterTimer = null;
+    this._sendingIds = new Set();
     this._onI18nUpdated = () => this.render();
   }
 
@@ -42,6 +43,12 @@ class LlMovementList extends HTMLElement {
     if (!next) return;
     if (next === this._currencyCode) return;
     this._currencyCode = next;
+    this.render();
+  }
+
+  setSendingMovementIds(ids) {
+    const next = new Set((Array.isArray(ids) ? ids : []).map((id) => String(id)));
+    this._sendingIds = next;
     this.render();
   }
 
@@ -272,6 +279,7 @@ class LlMovementList extends HTMLElement {
     const article = document.createElement('article');
     article.className = 'movement-card card';
     article.dataset.id = String(movement?.id ?? '');
+    const isSending = this._sendingIds.has(String(movement?.id ?? ''));
 
     const details = document.createElement('details');
     const summary = document.createElement('summary');
@@ -318,7 +326,17 @@ class LlMovementList extends HTMLElement {
     const sendBtn = document.createElement('button');
     sendBtn.className = 'btn secondary send-btn';
     sendBtn.type = 'button';
-    sendBtn.textContent = t('send');
+    if (isSending) {
+      sendBtn.disabled = true;
+      sendBtn.setAttribute('aria-label', t('send.sending'));
+      const spinner = document.createElement('span');
+      spinner.className = 'spinner';
+      spinner.setAttribute('aria-hidden', 'true');
+      sendBtn.appendChild(spinner);
+      sendBtn.appendChild(document.createTextNode(t('send.sending')));
+    } else {
+      sendBtn.textContent = t('send');
+    }
     const editBtn = document.createElement('button');
     editBtn.className = 'btn secondary edit-btn';
     editBtn.type = 'button';
@@ -331,6 +349,13 @@ class LlMovementList extends HTMLElement {
     detailsBtn.className = 'btn secondary details-btn';
     detailsBtn.type = 'button';
     detailsBtn.textContent = t('details');
+
+    if (isSending) {
+      editBtn.disabled = true;
+      deleteBtn.disabled = true;
+      detailsBtn.disabled = true;
+    }
+
     actions.appendChild(sendBtn);
     actions.appendChild(editBtn);
     actions.appendChild(deleteBtn);
@@ -397,6 +422,7 @@ class LlMovementList extends HTMLElement {
     for (const m of movements) {
       const tr = document.createElement('tr');
       tr.dataset.id = String(m?.id ?? '');
+      const isSending = this._sendingIds.has(String(m?.id ?? ''));
 
       const tdSelect = document.createElement('td');
       tdSelect.className = 'checkbox-col';
@@ -450,15 +476,32 @@ class LlMovementList extends HTMLElement {
       const sendBtn = document.createElement('button');
       sendBtn.className = 'icon-btn send-btn';
       sendBtn.type = 'button';
-      sendBtn.setAttribute('title', t('send'));
-      sendBtn.setAttribute('aria-label', t('send'));
-      sendBtn.textContent = '📤';
+      if (isSending) {
+        sendBtn.disabled = true;
+        sendBtn.setAttribute('title', t('send.sending'));
+        sendBtn.setAttribute('aria-label', t('send.sending'));
+        const spinner = document.createElement('span');
+        spinner.className = 'spinner';
+        spinner.setAttribute('aria-hidden', 'true');
+        sendBtn.appendChild(spinner);
+      } else {
+        sendBtn.setAttribute('title', t('send'));
+        sendBtn.setAttribute('aria-label', t('send'));
+        sendBtn.textContent = '📤';
+      }
       const detailsBtn = document.createElement('button');
       detailsBtn.className = 'icon-btn details-btn';
       detailsBtn.type = 'button';
       detailsBtn.setAttribute('title', t('details'));
       detailsBtn.setAttribute('aria-label', t('details'));
       detailsBtn.textContent = 'ℹ️';
+
+      if (isSending) {
+        editBtn.disabled = true;
+        deleteBtn.disabled = true;
+        detailsBtn.disabled = true;
+      }
+
       rowActions.appendChild(sendBtn);
       rowActions.appendChild(editBtn);
       rowActions.appendChild(deleteBtn);

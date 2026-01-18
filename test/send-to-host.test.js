@@ -74,6 +74,7 @@ describe('Send to host (idempotency + attempts + change log)', () => {
     const updated = await db.get('movements', 'm1');
     expect(updated.status).toBe('sent');
     expect(updated.rev).toBe(1);
+    expect(updated.notes).toContain('RemoteTxnId: r1');
 
     const attempts = await db.getAllByIndex('movement_send_attempts', 'movementId', 'm1');
     expect(attempts).toHaveLength(1);

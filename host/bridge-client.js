@@ -1,28 +1,24 @@
 // host/bridge-client.js
-// Exporta lo que finance-app.js espera:
-//   import {
-//     getUserProfile,
-//     initializeBridge as initBridge,
-//     isBridgeReady,
-//     sendTransactionToHost,
-//     waitForBridgeReady
-//   } from "./host/bridge-client.js";
+// Bridge v1 client (postMessage) with allowed-origin + request/response correlation.
 //
-// Objetivo:
-// - Log claro al cargar (env + handshake + errores reales del host)
-// - Auto-infer allowedParentOrigin si NO lo pasan (ancestorOrigins/referrer)
-// - Bridge v1 (RESULT/ERROR/HOST_CONTEXT) + diagnóstico REQUEST_HOST_CONTEXT
-// - sendTransactionToHost usa Bridge v1 (CREATE_EXPENSE/CREATE_INCOME) y adapta respuesta
-// - DEBUG extra: imprime payload original + payload mapeado + requestId + respuesta/error
-//
+// Logging policy:
+// - No console output during normal operation.
+// - Only a single throttled warning may be emitted for repeated disallowed-origin messages.
 import { uuidv4 } from "../utils/uuid.js";
 import { normalizeAllowedOrigin } from "./bridge-config.js";
 import { normalizeCategoryId } from "../utils/payload.js";
 
-const VERSION = "bridge-client@2026-01-18.payload-debug.v1";
 const DEFAULT_TIMEOUT_MS = 8000;
 const DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS = 6000;
 const DIAG_READY_TIMEOUT_MS = 1200;
+
+const warnedOnce = new Set();
+function warnOnce(key, message, meta) {
+  if (warnedOnce.has(key)) return;
+  warnedOnce.add(key);
+  // eslint-disable-next-line no-console
+  console.warn("[bridge]", message, meta ?? "");
+}
 
 function safeMessageType(data) {
   if (!data || typeof data !== "object") return null;
@@ -134,7 +130,6 @@ export function createBridgeClient({
   parentWindow,
   selfWindow = window,
   defaultTimeoutMs = DEFAULT_TIMEOUT_MS,
-  debug = true,
 } = {}) {
   // pending: requestId -> { resolve, reject, timer, type, msg }
   const pending = new Map();
@@ -152,52 +147,8 @@ export function createBridgeClient({
   // cache útil para debugging
   let lastHostContext = null;
 
-  function log(...args) {
-    if (!debug) return;
-    // eslint-disable-next-line no-console
-    console.log("[bridge]", ...args);
-  }
-  function warn(...args) {
-    // eslint-disable-next-line no-console
-    console.warn("[bridge]", ...args);
-  }
-  function error(...args) {
-    // eslint-disable-next-line no-console
-    console.error("[bridge]", ...args);
-  }
-
   function isReady() {
     return ready && Boolean(activeOrigin) && Boolean(hostWindow) && Boolean(allowedOrigin);
-  }
-
-  function dumpEnv() {
-    let ancestor0 = null;
-    try {
-      const ao = window.location?.ancestorOrigins;
-      ancestor0 = ao && ao.length ? ao[0] : null;
-    } catch {
-      ancestor0 = null;
-    }
-
-    log("version", VERSION);
-    log("boot env", {
-      selfUrl: window.location.href,
-      selfOrigin: window.location.origin,
-      allowedParentOriginProvided: allowedParentOrigin || null,
-      inferredAllowedOrigin: allowedOrigin || null,
-      referrer: document.referrer || null,
-      ancestor0,
-      hasParent: !!window.parent,
-      isIframe: (() => {
-        try {
-          return window.parent && window.parent !== window;
-        } catch {
-          return true;
-        }
-      })(),
-      hasOpener: !!window.opener,
-      hostWindow: hostWindow ? (hostWindow === window.parent ? "parent" : "opener") : null,
-    });
   }
 
   function postToHost(message) {
@@ -229,7 +180,6 @@ export function createBridgeClient({
           type: msg?.type,
           timeoutMs: tms,
         });
-        error("REQUEST TIMEOUT", { requestId, type: msg?.type, timeoutMs: tms, msg: safeJson(msg) });
         reject(e);
       }, tms);
 
@@ -237,16 +187,9 @@ export function createBridgeClient({
 
       try {
         postToHost({ ...msg, requestId });
-        log("message out", {
-          type: msg?.type,
-          requestId,
-          timeoutMs: tms,
-          payloadPreview: msg?.payload ? safeJson(msg.payload) : undefined,
-        });
       } catch (e) {
         window.clearTimeout(timer);
         pending.delete(requestId);
-        error("POST TO HOST FAILED", { code: e?.code, message: e?.message, msg: safeJson(msg) });
         reject(e);
       }
     });
@@ -263,9 +206,6 @@ export function createBridgeClient({
         const payload = data?.payload;
         if (payload && typeof payload === "object") lastHostContext = payload;
       }
-
-      log("HANDSHAKE OK", { activeOrigin, type });
-      if (lastHostContext) log("HOST_CONTEXT summary", summarizeHostContext(lastHostContext));
     }
   }
 
@@ -275,35 +215,25 @@ export function createBridgeClient({
     const type = safeMessageType(event.data);
     if (!type) return;
 
-    log("message in", {
-      type,
-      origin: event.origin,
-      expectedOrigin: allowedOrigin || null,
-      fromHostWindow: hostWindow ? event.source === hostWindow : null,
-      hasRequestId: typeof event.data?.requestId === "string",
-      dataKeys: Object.keys(event.data || {}),
-    });
-
     if (!allowedOrigin) {
       allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
-      warn("allowedOrigin was empty; inferred now:", allowedOrigin || null);
     }
 
     if (!allowedOrigin) {
-      warn("blocked: missing allowedOrigin (no provided + no inferable)");
       return;
     }
     if (event.origin !== allowedOrigin) {
-      warn("blocked: origin mismatch", { got: event.origin, expected: allowedOrigin });
+      warnOnce("origin-mismatch", "blocked: origin mismatch", {
+        got: event.origin,
+        expected: allowedOrigin,
+      });
       return;
     }
 
     if (!hostWindow) {
-      warn("blocked: no hostWindow (not iframe and no opener)");
       return;
     }
     if (event.source !== hostWindow) {
-      warn("blocked: source mismatch (event.source !== hostWindow)");
       return;
     }
 
@@ -320,13 +250,6 @@ export function createBridgeClient({
       pending.delete(requestId);
 
       const result = event.data?.result;
-      log("RESULT ✅", {
-        requestId,
-        requestType: p.type,
-        sentMsg: p.msg ? safeJson(p.msg) : undefined,
-        resultPreview: safeJson(result),
-      });
-
       p.resolve(result);
       return;
     }
@@ -338,7 +261,6 @@ export function createBridgeClient({
       const payload = event.data?.payload ?? event.data;
       if (payload && typeof payload === "object" && payload.v === 1) {
         lastHostContext = payload;
-        log("HOST_CONTEXT summary", summarizeHostContext(lastHostContext));
       }
 
       p.resolve(payload);
@@ -353,15 +275,6 @@ export function createBridgeClient({
       const code = typeof raw?.code === "string" ? raw.code : "UNKNOWN";
       const message = typeof raw?.message === "string" ? raw.message : "Unknown host error";
 
-      error("HOST ERROR ❌", {
-        requestId,
-        requestType: p.type,
-        code,
-        message,
-        raw,
-        sentMsg: p.msg ? safeJson(p.msg) : undefined,
-      });
-
       const e = Object.assign(new Error(message), { code, raw, requestId, requestType: p.type });
       p.reject(e);
       return;
@@ -370,10 +283,8 @@ export function createBridgeClient({
 
   function initializeBridge() {
     allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
-    dumpEnv();
 
     if (!allowedOrigin) {
-      error("NO CONNECT: allowedParentOrigin vacío/no inferible.");
       return Promise.reject(
         Object.assign(new Error("allowedParentOrigin is required"), {
           code: "MISSING_ALLOWED_PARENT_ORIGIN",
@@ -382,7 +293,6 @@ export function createBridgeClient({
     }
 
     if (!hostWindow) {
-      error("NO CONNECT: no hay hostWindow (iframe/opener).");
       return Promise.reject(Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" }));
     }
 
@@ -393,36 +303,23 @@ export function createBridgeClient({
 
     try {
       postToHost({ type: "APP_READY" });
-      log("sent APP_READY to", allowedOrigin);
     } catch (e) {
-      error("failed to post APP_READY", e);
+      throw e;
     }
 
     void request({ type: "REQUEST_HOST_CONTEXT" }, DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS)
       .then((ctx) => {
-        log("REQUEST_HOST_CONTEXT OK", ctx);
         if (ctx && typeof ctx === "object" && ctx.v === 1) {
           lastHostContext = ctx;
-          log("HOST_CONTEXT summary", summarizeHostContext(lastHostContext));
         }
       })
       .catch((e) => {
-        error("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw });
+        // ignore: diagnostic only
       });
 
     window.setTimeout(() => {
-      if (isReady()) {
-        log("bridge READY ✅", { activeOrigin });
-        return;
-      }
-      error("bridge NOT READY ❌ (no handshake)", {
-        allowedOrigin,
-        hint: [
-          "1) allowedOrigin debe ser ORIGIN exacto (sin path).",
-          "2) Debes estar en iframe u opener (si opener=null, el host pudo usar noopener).",
-          "3) El host debe responder a APP_READY con HOST_CONTEXT/BRIDGE_READY.",
-        ],
-      });
+      // Silent: readiness is polled by callers, and standalone mode is expected.
+      void allowedOrigin;
     }, DIAG_READY_TIMEOUT_MS);
 
     return Promise.resolve({ ok: true, allowedOrigin });
@@ -443,15 +340,6 @@ export function createBridgeClient({
 
     const v1Payload = isIncome ? mapToCreateIncomePayload(payload) : mapToCreateExpensePayload(payload);
 
-    // DEBUG CLAVE: imprime ambos payloads
-    log("TX SEND ▶︎", {
-      msgType,
-      idempotencyKey: String(idempotencyKey || ""),
-      originalPayload: safeJson(payload),
-      mappedV1Payload: safeJson(v1Payload),
-      timeoutMs: Number(timeoutMs ?? DEFAULT_TIMEOUT_MS),
-    });
-
     if (!Number.isFinite(Number(v1Payload.amount)) || Number(v1Payload.amount) <= 0) {
       const e = Object.assign(new Error("Invalid amount (must be > 0)"), { code: "VALIDATION" });
       e.responsePayload = { v1Payload, original: payload };
@@ -460,9 +348,6 @@ export function createBridgeClient({
 
     // manda al host
     const result = await request({ type: msgType, payload: v1Payload }, timeoutMs);
-
-    // DEBUG resultado
-    log("TX RESULT ◀︎", { msgType, result: safeJson(result) });
 
     const rawError = result?.error;
     if (rawError && typeof rawError === "object") {
@@ -504,8 +389,6 @@ function getOrCreateSingleton(opts) {
 
   if (!bootPromise) {
     bootPromise = bridgeSingleton.initializeBridge().catch((e) => {
-      // eslint-disable-next-line no-console
-      console.error("[bridge] boot failed", { code: e.code, message: e.message, raw: e.raw });
       throw e;
     });
   }
@@ -549,12 +432,8 @@ export async function getUserProfile(opts = {}) {
 
   try {
     const res = await b.request({ type: "GET_USER_PROFILE" }, opts.timeoutMs);
-    // eslint-disable-next-line no-console
-    console.log("[bridge] GET_USER_PROFILE OK", res);
     return res;
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error("[bridge] GET_USER_PROFILE ERROR", { code: e?.code, message: e?.message, raw: e?.raw });
     throw e;
   }
 }

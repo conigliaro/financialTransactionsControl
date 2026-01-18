@@ -1,7 +1,7 @@
 // financie-app.js
 
 import { db } from './db/indexeddb.js';
-import { loadTranslations, setLanguage as i18nSetLanguage, t } from './i18n/loader.js';
+import { getActiveLang, loadTranslations, setLanguage as i18nSetLanguage, t } from './i18n/loader.js';
 import './components/ll-app.js';
 import './components/ll-header.js';
 import './components/ll-movement-list.js';
@@ -15,6 +15,7 @@ import { showToast } from './components/ui-toast.js';
 import { dialog } from './components/ui-dialog.js';
 import { uuidv4 } from './utils/uuid.js';
 import { getUserProfile, initializeBridge as initBridge, isBridgeReady, sendTransactionToHost, waitForBridgeReady } from './host/bridge-client.js';
+import { generateXlsxBuffer } from './utils/xlsx-export.js';
 
 export class FinancieApp {
   constructor() {
@@ -22,9 +23,15 @@ export class FinancieApp {
     document.body.appendChild(this.appRoot);
     this.movementList = this.appRoot.shadowRoot.querySelector('ll-movement-list');
     this.header = this.appRoot.shadowRoot.querySelector('ll-header');
+    this.exportDialog = this.appRoot.shadowRoot.querySelector('ll-export-dialog');
     this.currentTheme = 'light';
     this.currentView = 'main';
     this.currentCurrencyCode = 'EUR';
+    const now = new Date();
+    this.currentMonth = now.getMonth() + 1;
+    this.currentYear = now.getFullYear();
+    this.companyName = '';
+    this.companySubtitle = '';
     this._sendingMovementIds = new Set();
     this._bridgeProfileLoaded = false;
   }
@@ -46,6 +53,7 @@ export class FinancieApp {
     this.populateMonthYearSelectors();
     await this.populateCatalogOptions();
     this.setView('main');
+    this._updateExportDialogInfo();
 
     await this._showFirstRunIfNeeded();
     void this._loadBridgeUserProfileOnce();
@@ -109,7 +117,7 @@ export class FinancieApp {
   addEventListeners() {
     const headerEl = this.header.shadowRoot;
     const movementForm = this.appRoot.shadowRoot.querySelector('ll-movement-form');
-    const exportDialog = this.appRoot.shadowRoot.querySelector('ll-export-dialog');
+    const exportDialog = this.exportDialog;
     const movementDetails = this.appRoot.shadowRoot.querySelector('ll-movement-details');
 
     this.header.addEventListener('ll-theme-toggle', () => this.toggleTheme());
@@ -119,6 +127,13 @@ export class FinancieApp {
     });
     this.header.addEventListener('ll-language-change', (e) => this.setLanguage(e.detail?.lang));
     this.header.addEventListener('ll-export', () => exportDialog.show());
+    this.header.addEventListener('ll-period-change', (e) => {
+      const month = Number(e.detail?.month);
+      const year = Number(e.detail?.year);
+      if (Number.isFinite(month)) this.currentMonth = month;
+      if (Number.isFinite(year)) this.currentYear = year;
+      this._updateExportDialogInfo();
+    });
     this.header.addEventListener('ll-nav', (e) => this.setView(e.detail?.view));
     this.appRoot.addEventListener('ll-nav', (e) => this.setView(e.detail?.view));
     this.appRoot.addEventListener('ll-company-updated', (e) => {
@@ -210,12 +225,15 @@ export class FinancieApp {
       await this.renderMovementList();
     });
 
-    exportDialog.shadowRoot.querySelector('#close-btn').addEventListener('click', () => {
+    exportDialog.shadowRoot.addEventListener('click', async (e) => {
+      if (e.target?.closest?.('#close-btn')) exportDialog.hide();
+      if (e.target?.closest?.('#export-csv-btn')) {
+        await this.exportCSV();
         exportDialog.hide();
-    });
-    exportDialog.shadowRoot.querySelector('#export-csv-btn').addEventListener('click', () => {
-        this.exportCSV();
-        exportDialog.hide();
+      }
+      if (e.target?.closest?.('#export-xlsx-btn')) {
+        await this.exportXlsx();
+      }
     });
   }
 
@@ -347,6 +365,32 @@ export class FinancieApp {
     };
   }
 
+  _formatDateTime(value) {
+    const ts = Number(value);
+    if (!Number.isFinite(ts)) return '';
+    try {
+      const lang = typeof getActiveLang === 'function' ? getActiveLang() : navigator.language;
+      return new Intl.DateTimeFormat(lang, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ts));
+    } catch {
+      try {
+        return new Date(ts).toLocaleString();
+      } catch {
+        return '';
+      }
+    }
+  }
+
+  _appendRemoteTxnIdToNote(note, remoteTxnId) {
+    const rid = String(remoteTxnId || '').trim();
+    if (!rid) return { note: String(note ?? ''), changed: false };
+
+    const line = `RemoteTxnId: ${rid}`;
+    const current = String(note ?? '');
+    if (current.includes(line)) return { note: current, changed: false };
+    if (!current.trim()) return { note: line, changed: true };
+    return { note: `${current}\n\n${line}`, changed: true };
+  }
+
   _validateMovementForSend(movement) {
     if (!movement) return t('send.validation.missing_movement');
     if (!movement.date) return t('send.validation.missing_date');
@@ -354,7 +398,7 @@ export class FinancieApp {
     return null;
   }
 
-  async handleSend(movementId) {
+  async handleSend(movementId, { forceResend = false } = {}) {
     const id = String(movementId || '');
     if (!id) return;
     if (this._sendingMovementIds.has(id)) {
@@ -362,30 +406,70 @@ export class FinancieApp {
       return;
     }
 
+    const movement = await db.get('movements', id);
+    const error = this._validateMovementForSend(movement);
+    if (error) {
+      showToast(error, { variant: 'warning' });
+      return;
+    }
+
+    const [existingMap, existingAttempts] = await Promise.all([
+      db.get('movement_remote_map', id),
+      db.getAllByIndex('movement_send_attempts', 'movementId', id),
+    ]);
+
+    const hasPending = Array.isArray(existingAttempts) && existingAttempts.some((a) => a?.status === 'pending');
+    if (hasPending) {
+      showToast(t('send.in_progress'), { variant: 'warning' });
+      return;
+    }
+
+    const lastSuccess = Array.isArray(existingAttempts)
+      ? existingAttempts
+          .filter((a) => a?.status === 'success')
+          .sort((a, b) => Number(b?.createdAt || 0) - Number(a?.createdAt || 0))[0]
+      : null;
+
+    const knownRemoteTxnId = (existingMap?.remoteTxnId || lastSuccess?.remoteTxnId || '').trim();
+    const knownSentAt = Number(existingMap?.lastSentAt || lastSuccess?.createdAt || 0) || null;
+    const alreadySent = Boolean(knownRemoteTxnId);
+
+    if (alreadySent && !forceResend) {
+      const lines = [
+        knownSentAt ? `${t('send.alreadySent.sentAt')}: ${this._formatDateTime(knownSentAt)}` : null,
+        knownRemoteTxnId ? `${t('send.alreadySent.remoteId')}: ${knownRemoteTxnId}` : null,
+      ].filter(Boolean);
+      const wantsResend = await dialog.confirm({
+        title: t('send.alreadySent.title'),
+        message: lines.join('\n'),
+        cancelLabel: t('send.alreadySent.close'),
+        confirmLabel: t('send.alreadySent.resend'),
+        variant: 'danger',
+      });
+      if (!wantsResend) return;
+
+      const phrase = t('send.resendConfirm.phrase');
+      const confirmed = await dialog.confirmPhrase({
+        title: t('send.resendConfirm.title'),
+        message: t('send.resendConfirm.body'),
+        phraseLabel: t('send.resendConfirm.phraseLabel'),
+        phrase,
+        placeholder: t('send.resendConfirm.placeholder'),
+        cancelLabel: t('send.resendConfirm.cancel'),
+        confirmLabel: t('send.resendConfirm.confirm'),
+        variant: 'danger',
+      });
+      if (!confirmed) return;
+    }
+
     this._sendingMovementIds.add(id);
+    this.movementList?.setSendingMovementIds?.(Array.from(this._sendingMovementIds));
     try {
-      const movement = await db.get('movements', id);
-      const error = this._validateMovementForSend(movement);
-      if (error) {
-        showToast(error, { variant: 'warning' });
-        return;
-      }
-
-      const existingMap = await db.get('movement_remote_map', id);
-      if (existingMap?.remoteTxnId) {
-        showToast(t('send.already_sent'), { variant: 'info' });
-        return;
-      }
-
-      const existingAttempts = await db.getAllByIndex('movement_send_attempts', 'movementId', id);
-      const hasPending = Array.isArray(existingAttempts) && existingAttempts.some((a) => a?.status === 'pending');
-      if (hasPending) {
-        showToast(t('send.in_progress'), { variant: 'warning' });
-        return;
-      }
-
       const idempotencyKey = this._idempotencyKeyFor(movement);
       const payload = this._buildSendPayload(movement);
+      if (knownRemoteTxnId) {
+        payload.notes = this._appendRemoteTxnIdToNote(payload.notes, knownRemoteTxnId).note;
+      }
 
       const attemptId = uuidv4();
       const createdAt = Date.now();
@@ -473,6 +557,7 @@ export class FinancieApp {
         return;
       }
 
+      const trimmedRemote = remoteTxnId.trim();
       await db.put('movement_send_attempts', {
         attemptId,
         movementId: id,
@@ -484,7 +569,7 @@ export class FinancieApp {
         errorCode: null,
         errorMessage: null,
         durationMs,
-        remoteTxnId: remoteTxnId.trim(),
+        remoteTxnId: trimmedRemote,
       });
 
       const prevSentCount = Number(existingMap?.sentCount);
@@ -493,14 +578,15 @@ export class FinancieApp {
       await db.put('movement_remote_map', {
         movementId: id,
         idempotencyKey,
-        remoteTxnId: remoteTxnId.trim(),
+        remoteTxnId: trimmedRemote,
         firstSentAt,
         lastSentAt: createdAt,
         sentCount: nextCount,
       });
 
+      const appended = this._appendRemoteTxnIdToNote(movement?.notes, trimmedRemote);
       const before = movement;
-      const after = { ...movement, status: 'sent' };
+      const after = { ...movement, status: 'sent', notes: appended.note };
       await db.put('movements', after);
       await this._logMovementChange({
         movementId: id,
@@ -514,6 +600,7 @@ export class FinancieApp {
       showToast(t('send.success'), { variant: 'success' });
     } finally {
       this._sendingMovementIds.delete(id);
+      this.movementList?.setSendingMovementIds?.(Array.from(this._sendingMovementIds));
     }
   }
 
@@ -666,9 +753,12 @@ export class FinancieApp {
         years.push({ value: i, label: String(i) });
     }
     
-    const month = new Date().getMonth() + 1;
-    const year = currentYear;
+    const month = this.currentMonth;
+    const year = this.currentYear;
     this.header.setPeriodOptions({ months, years, month, year });
+    this.currentMonth = month;
+    this.currentYear = year;
+    this._updateExportDialogInfo();
   }
 
   async loadTheme() {
@@ -693,7 +783,10 @@ export class FinancieApp {
     ]);
     const name = nameMeta?.value ? String(nameMeta.value) : '';
     const subtitle = subtitleMeta?.value ? String(subtitleMeta.value) : '';
+    this.companyName = name;
+    this.companySubtitle = subtitle;
     this.header.setCompany?.({ name, subtitle });
+    this._updateExportDialogInfo();
   }
 
   async loadLanguage() {
@@ -707,6 +800,7 @@ export class FinancieApp {
     await db.put('meta', { key: 'language', value: normalized });
     await i18nSetLanguage(normalized);
     this.populateMonthYearSelectors();
+    this._updateExportDialogInfo();
   }
 
   setTheme(theme) {
@@ -737,5 +831,62 @@ export class FinancieApp {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  }
+
+  _periodLabelForExport() {
+    const mm = String(Number(this.currentMonth) || 1).padStart(2, '0');
+    const yyyy = String(Number(this.currentYear) || new Date().getFullYear());
+    return `${mm}/${yyyy}`;
+  }
+
+  _updateExportDialogInfo() {
+    const dlg = this.exportDialog;
+    if (!dlg?.setInfo) return;
+    dlg.setInfo({
+      companyName: this.companyName && this.companyName.trim() ? this.companyName.trim() : t('company.name'),
+      period: this._periodLabelForExport(),
+    });
+  }
+
+  async exportXlsx() {
+    const dlg = this.exportDialog;
+    try {
+      dlg?.setBusy?.({ busy: true, status: t('export.generating') });
+      const movements = await db.getAll('movements');
+      const buf = await generateXlsxBuffer({
+        movements,
+        companyName: this.companyName && this.companyName.trim() ? this.companyName.trim() : t('company.name'),
+        month: this.currentMonth,
+        year: this.currentYear,
+        currencyCode: this.currentCurrencyCode,
+      });
+      const mm = String(Number(this.currentMonth) || 1).padStart(2, '0');
+      const yyyy = String(Number(this.currentYear) || new Date().getFullYear());
+      const filename = `controle_movimentacao_financeira_${mm}-${yyyy}.xlsx`;
+
+      const blob = new Blob([buf], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      showToast(t('export.success'), { variant: 'success' });
+      dlg?.hide?.();
+    } catch (err) {
+      const message = err?.message ? String(err.message) : String(err);
+      await dialog.alert({
+        title: t('export.failed'),
+        message: `${t('export.failed')} — ${message}`,
+        closeLabel: t('close'),
+      });
+    } finally {
+      dlg?.setBusy?.({ busy: false, status: '' });
+    }
   }
 }

@@ -66,6 +66,7 @@ class UiDialog extends HTMLElement {
     this._modalToken = null;
     this._restoreFocusEl = null;
     this._resultMapper = null;
+    this._inputHandler = null;
   }
 
   connectedCallback() {
@@ -87,6 +88,10 @@ class UiDialog extends HTMLElement {
             <label class="dialog-check" id="opt-row" hidden>
               <input type="checkbox" id="opt-check" />
               <span id="opt-label"></span>
+            </label>
+            <label class="dialog-field" id="input-row" hidden>
+              <span class="dialog-field__label" id="input-label"></span>
+              <input class="dialog-field__input" id="input" type="text" />
             </label>
             <details class="dialog-details" id="details" hidden>
               <summary id="details-summary"></summary>
@@ -115,6 +120,82 @@ class UiDialog extends HTMLElement {
 
     this.shadowRoot.getElementById('cancel-btn').addEventListener('click', () => this._handle(false));
     this.shadowRoot.getElementById('confirm-btn').addEventListener('click', () => this._handle(true));
+  }
+
+  confirmPhrase({
+    title,
+    message,
+    phraseLabel,
+    phrase,
+    placeholder = '',
+    confirmLabel = 'Confirm',
+    cancelLabel = 'Cancel',
+    variant = 'danger',
+    matchMode = 'case_insensitive_trim',
+  }) {
+    const expected = String(phrase || '');
+    const normalize = (s) => {
+      const base = String(s ?? '');
+      if (matchMode === 'case_insensitive_trim') return base.trim().toLowerCase();
+      return base;
+    };
+    const expectedNormalized = normalize(expected);
+
+    return new Promise((resolve) => {
+      this.resolve = resolve;
+      this._resultMapper = null;
+      this._restoreFocusEl = document.activeElement;
+
+      this.shadowRoot.getElementById('title').textContent = String(title || '');
+      this.shadowRoot.getElementById('message').textContent = String(message || '');
+      this._setDetails({ summary: '', details: '' });
+      this._setOptionRow(null);
+      this._removeCopyButton();
+
+      const inputRow = this.shadowRoot.getElementById('input-row');
+      const inputLabelEl = this.shadowRoot.getElementById('input-label');
+      const inputEl = this.shadowRoot.getElementById('input');
+      if (inputRow && inputLabelEl && inputEl) {
+        inputRow.hidden = false;
+        inputLabelEl.textContent = String(phraseLabel || '');
+        inputEl.value = '';
+        inputEl.placeholder = String(placeholder || '');
+        inputEl.autocomplete = 'off';
+        inputEl.spellcheck = false;
+      }
+
+      const confirmBtn = this.shadowRoot.getElementById('confirm-btn');
+      confirmBtn.textContent = String(confirmLabel || '');
+      confirmBtn.className = 'btn';
+      confirmBtn.classList.add(variant);
+      confirmBtn.disabled = true;
+
+      const cancelBtn = this.shadowRoot.getElementById('cancel-btn');
+      cancelBtn.hidden = false;
+      cancelBtn.textContent = String(cancelLabel || '');
+
+      const updateDisabled = () => {
+        const val = normalize(inputEl?.value ?? '');
+        const ok = expectedNormalized && val === expectedNormalized;
+        confirmBtn.disabled = !ok;
+      };
+      updateDisabled();
+
+      if (this._inputHandler && inputEl) {
+        try {
+          inputEl.removeEventListener('input', this._inputHandler);
+        } catch {
+          // no-op
+        }
+      }
+      this._inputHandler = updateDisabled;
+      inputEl?.addEventListener('input', updateDisabled);
+
+      this.style.display = 'flex';
+      lockBodyScroll();
+      this._modalToken = registerModal({ close: () => this._handle(false), restoreFocusEl: this._restoreFocusEl });
+      queueMicrotask(() => inputEl?.focus());
+    });
   }
 
   _removeCopyButton() {
@@ -289,6 +370,7 @@ class UiDialog extends HTMLElement {
       this._resultMapper = null;
       const result = mapper ? mapper(confirmed) : confirmed;
       this._setOptionRow(null);
+      this._setInputRow(null);
       this.resolve(result);
     }
   }
@@ -307,6 +389,30 @@ class UiDialog extends HTMLElement {
     row.hidden = false;
     label.textContent = String(option.label || '');
     check.checked = Boolean(option.checked);
+  }
+
+  _setInputRow(input) {
+    const row = this.shadowRoot.getElementById('input-row');
+    const label = this.shadowRoot.getElementById('input-label');
+    const el = this.shadowRoot.getElementById('input');
+    if (!row || !label || !el) return;
+    if (this._inputHandler) {
+      try {
+        el.removeEventListener('input', this._inputHandler);
+      } catch {
+        // no-op
+      }
+      this._inputHandler = null;
+    }
+    row.hidden = true;
+    label.textContent = '';
+    el.value = '';
+    el.placeholder = '';
+    if (!input) return;
+    row.hidden = false;
+    label.textContent = String(input.label || '');
+    el.value = String(input.value || '');
+    el.placeholder = String(input.placeholder || '');
   }
 }
 

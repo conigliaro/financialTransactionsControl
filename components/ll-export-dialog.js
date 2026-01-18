@@ -9,6 +9,10 @@ class LlExportDialog extends HTMLElement {
     this.attachShadow({ mode: 'open' });
     this._modalToken = null;
     this._restoreFocusEl = null;
+    this._companyName = '';
+    this._period = '';
+    this._busy = false;
+    this._status = '';
     this._onI18nUpdated = () => {
       if (this.style.display === 'none') this.render();
     };
@@ -41,14 +45,34 @@ class LlExportDialog extends HTMLElement {
           <div class="modal-body">
             <div class="kv"><span>${t('export.dialog.company_name')}</span><strong id="company-name-display"></strong></div>
             <div class="kv"><span>${t('export.dialog.period')}</span><strong id="period-display"></strong></div>
+            <div class="export-status" id="export-status" ${this._status ? '' : 'hidden'}></div>
           </div>
           <div class="modal-footer">
-            <button id="export-csv-btn" class="btn primary" type="button">${t('export.csv')}</button>
-            <button id="export-xlsx-btn" class="btn secondary" type="button" disabled aria-disabled="true">${t('export.xlsx')} · ${t('soon')}</button>
+            <button id="export-csv-btn" class="btn primary" type="button" ${this._busy ? 'disabled' : ''}>${t('export.csv')}</button>
+            <button id="export-xlsx-btn" class="btn secondary" type="button" ${this._busy ? 'disabled' : ''}>${t('export.xlsx')}</button>
           </div>
         </div>
       </div>
     `;
+
+    const companyEl = this.shadowRoot.getElementById('company-name-display');
+    if (companyEl) companyEl.textContent = this._companyName || '';
+    const periodEl = this.shadowRoot.getElementById('period-display');
+    if (periodEl) periodEl.textContent = this._period || '';
+    const statusEl = this.shadowRoot.getElementById('export-status');
+    if (statusEl) statusEl.textContent = this._status || '';
+  }
+
+  setInfo({ companyName, period } = {}) {
+    this._companyName = companyName == null ? '' : String(companyName);
+    this._period = period == null ? '' : String(period);
+    this.render();
+  }
+
+  setBusy({ busy, status } = {}) {
+    this._busy = Boolean(busy);
+    this._status = status == null ? '' : String(status);
+    this.render();
   }
 
   show() {
