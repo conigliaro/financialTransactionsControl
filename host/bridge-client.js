@@ -1,5 +1,5 @@
-// host/bridge-client.js (DEBUG SIMPLE, AUTO-INFER allowedParentOrigin)
-// Compatible con financie-app.js imports:
+// host/bridge-client.js
+// Exporta lo que finance-app.js espera:
 //   import {
 //     getUserProfile,
 //     initializeBridge as initBridge,
@@ -8,16 +8,17 @@
 //     waitForBridgeReady
 //   } from "./host/bridge-client.js";
 //
-// Importante:
-// - NO usamos MBS_SEND_TRANSACTION por defecto.
-// - sendTransactionToHost() traduce a Bridge v1:
-//     expense -> CREATE_EXPENSE
-//     income  -> CREATE_INCOME
-// - Devuelve { status:'success', remoteTxnId, result } para que finance-app.js no explote.
+// Objetivo:
+// - Log claro al cargar (env + handshake + errores reales del host)
+// - Auto-infer allowedParentOrigin si NO lo pasan (ancestorOrigins/referrer)
+// - Bridge v1 (RESULT/ERROR/HOST_CONTEXT) + diagnóstico REQUEST_HOST_CONTEXT
+// - sendTransactionToHost usa Bridge v1 (CREATE_EXPENSE/CREATE_INCOME) y adapta respuesta
+// - DEBUG extra: imprime payload original + payload mapeado + requestId + respuesta/error
 //
 import { uuidv4 } from "../utils/uuid.js";
 import { normalizeAllowedOrigin } from "./bridge-config.js";
 
+const VERSION = "bridge-client@2026-01-18.payload-debug.v1";
 const DEFAULT_TIMEOUT_MS = 8000;
 const DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS = 6000;
 const DIAG_READY_TIMEOUT_MS = 1200;
@@ -58,13 +59,24 @@ function inferAllowedOrigin(provided) {
   return "";
 }
 
-// Mapea tu payload (miniapp) al payload Bridge v1
+function safeJson(obj) {
+  try {
+    return JSON.parse(JSON.stringify(obj));
+  } catch {
+    return obj;
+  }
+}
+
 function mapToCreateExpensePayload(payload) {
   const amount = Number(payload?.paidValue ?? payload?.amount);
   return {
     amount: Number.isFinite(amount) ? amount : 0,
     currencyCode: payload?.currencyCode ? String(payload.currencyCode) : undefined,
-    note: payload?.notes ? String(payload.notes) : payload?.vendor ? String(payload.vendor) : undefined,
+    note: payload?.notes
+      ? String(payload.notes)
+      : payload?.vendor
+      ? String(payload.vendor)
+      : undefined,
     occurredAt: payload?.date ? String(payload.date) : undefined,
     categoryId: payload?.expenseType ? String(payload.expenseType) : undefined,
   };
@@ -75,7 +87,11 @@ function mapToCreateIncomePayload(payload) {
   return {
     amount: Number.isFinite(amount) ? amount : 0,
     currencyCode: payload?.currencyCode ? String(payload.currencyCode) : undefined,
-    note: payload?.notes ? String(payload.notes) : payload?.vendor ? String(payload.vendor) : undefined,
+    note: payload?.notes
+      ? String(payload.notes)
+      : payload?.vendor
+      ? String(payload.vendor)
+      : undefined,
     occurredAt: payload?.date ? String(payload.date) : undefined,
     categoryId: payload?.expenseType ? String(payload.expenseType) : undefined,
   };
@@ -92,8 +108,22 @@ function pickRemoteTxnId(result, fallback) {
 
   if (typeof cand === "string" && cand.trim()) return cand.trim();
   if (typeof cand === "number" && Number.isFinite(cand)) return String(cand);
-
   return String(fallback || "");
+}
+
+function summarizeHostContext(ctx) {
+  try {
+    const v = ctx?.v;
+    const isAuthed = ctx?.isAuthed;
+    const perms = Array.isArray(ctx?.permissions) ? ctx.permissions : [];
+    const appId = ctx?.app?.id;
+    const appMode = ctx?.app?.mode;
+    const platformMode = ctx?.platform?.mode;
+    const platformHost = ctx?.platform?.host;
+    return { v, isAuthed, permissions: perms, appId, appMode, platformMode, platformHost };
+  } catch {
+    return null;
+  }
 }
 
 export function createBridgeClient({
@@ -103,6 +133,7 @@ export function createBridgeClient({
   defaultTimeoutMs = DEFAULT_TIMEOUT_MS,
   debug = true,
 } = {}) {
+  // pending: requestId -> { resolve, reject, timer, type, msg }
   const pending = new Map();
 
   let destroyed = false;
@@ -114,6 +145,9 @@ export function createBridgeClient({
 
   let allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
   const hostWindow = parentWindow ?? inferHostWindow();
+
+  // cache útil para debugging
+  let lastHostContext = null;
 
   function log(...args) {
     if (!debug) return;
@@ -142,6 +176,7 @@ export function createBridgeClient({
       ancestor0 = null;
     }
 
+    log("version", VERSION);
     log("boot env", {
       selfUrl: window.location.href,
       selfOrigin: window.location.origin,
@@ -176,9 +211,7 @@ export function createBridgeClient({
 
   function request(msg, timeoutMs) {
     if (destroyed) {
-      return Promise.reject(
-        Object.assign(new Error("Bridge destroyed"), { code: "BRIDGE_DESTROYED" })
-      );
+      return Promise.reject(Object.assign(new Error("Bridge destroyed"), { code: "BRIDGE_DESTROYED" }));
     }
 
     const requestId = uuidv4();
@@ -187,27 +220,49 @@ export function createBridgeClient({
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         pending.delete(requestId);
-        reject(Object.assign(new Error("timeout"), { code: "TIMEOUT", requestId, type: msg?.type }));
+        const e = Object.assign(new Error("timeout"), {
+          code: "TIMEOUT",
+          requestId,
+          type: msg?.type,
+          timeoutMs: tms,
+        });
+        error("REQUEST TIMEOUT", { requestId, type: msg?.type, timeoutMs: tms, msg: safeJson(msg) });
+        reject(e);
       }, tms);
 
-      pending.set(requestId, { resolve, reject, timer, type: msg?.type });
+      pending.set(requestId, { resolve, reject, timer, type: msg?.type, msg });
 
       try {
         postToHost({ ...msg, requestId });
+        log("message out", {
+          type: msg?.type,
+          requestId,
+          timeoutMs: tms,
+          payloadPreview: msg?.payload ? safeJson(msg.payload) : undefined,
+        });
       } catch (e) {
         window.clearTimeout(timer);
         pending.delete(requestId);
+        error("POST TO HOST FAILED", { code: e?.code, message: e?.message, msg: safeJson(msg) });
         reject(e);
       }
     });
   }
 
-  function markHandshake(event, type) {
+  function markHandshake(event, type, data) {
     if (ready) return;
+
     if (type === "HOST_CONTEXT" || type === "BRIDGE_READY") {
       ready = true;
       activeOrigin = event.origin;
+
+      if (type === "HOST_CONTEXT") {
+        const payload = data?.payload;
+        if (payload && typeof payload === "object") lastHostContext = payload;
+      }
+
       log("HANDSHAKE OK", { activeOrigin, type });
+      if (lastHostContext) log("HOST_CONTEXT summary", summarizeHostContext(lastHostContext));
     }
   }
 
@@ -249,7 +304,7 @@ export function createBridgeClient({
       return;
     }
 
-    markHandshake(event, type);
+    markHandshake(event, type, event.data);
 
     const requestId = event.data?.requestId;
     if (typeof requestId !== "string") return;
@@ -260,14 +315,30 @@ export function createBridgeClient({
     if (type === "RESULT") {
       window.clearTimeout(p.timer);
       pending.delete(requestId);
-      p.resolve(event.data?.result);
+
+      const result = event.data?.result;
+      log("RESULT ✅", {
+        requestId,
+        requestType: p.type,
+        sentMsg: p.msg ? safeJson(p.msg) : undefined,
+        resultPreview: safeJson(result),
+      });
+
+      p.resolve(result);
       return;
     }
 
     if (type === "HOST_CONTEXT") {
       window.clearTimeout(p.timer);
       pending.delete(requestId);
-      p.resolve(event.data?.payload ?? event.data);
+
+      const payload = event.data?.payload ?? event.data;
+      if (payload && typeof payload === "object" && payload.v === 1) {
+        lastHostContext = payload;
+        log("HOST_CONTEXT summary", summarizeHostContext(lastHostContext));
+      }
+
+      p.resolve(payload);
       return;
     }
 
@@ -279,13 +350,16 @@ export function createBridgeClient({
       const code = typeof raw?.code === "string" ? raw.code : "UNKNOWN";
       const message = typeof raw?.message === "string" ? raw.message : "Unknown host error";
 
-      const e = Object.assign(new Error(message), {
-        code,
-        raw,
+      error("HOST ERROR ❌", {
         requestId,
         requestType: p.type,
+        code,
+        message,
+        raw,
+        sentMsg: p.msg ? safeJson(p.msg) : undefined,
       });
 
+      const e = Object.assign(new Error(message), { code, raw, requestId, requestType: p.type });
       p.reject(e);
       return;
     }
@@ -306,9 +380,7 @@ export function createBridgeClient({
 
     if (!hostWindow) {
       error("NO CONNECT: no hay hostWindow (iframe/opener).");
-      return Promise.reject(
-        Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" })
-      );
+      return Promise.reject(Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" }));
     }
 
     if (!initialized) {
@@ -324,8 +396,16 @@ export function createBridgeClient({
     }
 
     void request({ type: "REQUEST_HOST_CONTEXT" }, DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS)
-      .then((ctx) => log("REQUEST_HOST_CONTEXT OK", ctx))
-      .catch((e) => error("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw }));
+      .then((ctx) => {
+        log("REQUEST_HOST_CONTEXT OK", ctx);
+        if (ctx && typeof ctx === "object" && ctx.v === 1) {
+          lastHostContext = ctx;
+          log("HOST_CONTEXT summary", summarizeHostContext(lastHostContext));
+        }
+      })
+      .catch((e) => {
+        error("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw });
+      });
 
     window.setTimeout(() => {
       if (isReady()) {
@@ -345,42 +425,50 @@ export function createBridgeClient({
     return Promise.resolve({ ok: true, allowedOrigin });
   }
 
-  // IMPORTANTE: implementado en Bridge v1 (starter kit), NO MBS_*
+  // Envío via Bridge v1 (CREATE_EXPENSE/CREATE_INCOME)
   async function sendTransactionToHost(payload, idempotencyKey, { timeoutMs } = {}) {
-    if (!hostWindow) {
-      throw Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" });
-    }
+    if (!hostWindow) throw Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" });
     if (!allowedOrigin) {
       throw Object.assign(new Error("allowedParentOrigin is required (or inferable)"), {
         code: "MISSING_ALLOWED_PARENT_ORIGIN",
       });
     }
 
-    const txnType = String(payload?.txnType || "").toLowerCase();
+    const txnType = String(payload?.txnType || payload?.type || "").toLowerCase();
     const isIncome = txnType === "income";
-    const isExpense = txnType === "expense" || !txnType;
-
     const msgType = isIncome ? "CREATE_INCOME" : "CREATE_EXPENSE";
+
     const v1Payload = isIncome ? mapToCreateIncomePayload(payload) : mapToCreateExpensePayload(payload);
 
-    // Validación mínima para que el host no te devuelva ERROR por tonterías
+    // DEBUG CLAVE: imprime ambos payloads
+    log("TX SEND ▶︎", {
+      msgType,
+      idempotencyKey: String(idempotencyKey || ""),
+      originalPayload: safeJson(payload),
+      mappedV1Payload: safeJson(v1Payload),
+      timeoutMs: Number(timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    });
+
     if (!Number.isFinite(Number(v1Payload.amount)) || Number(v1Payload.amount) <= 0) {
       const e = Object.assign(new Error("Invalid amount (must be > 0)"), { code: "VALIDATION" });
       e.responsePayload = { v1Payload, original: payload };
       throw e;
     }
 
-    // Bridge v1 responde RESULT con un objeto de transacción
+    // manda al host
     const result = await request({ type: msgType, payload: v1Payload }, timeoutMs);
 
-    // Adapter: tu finance-app.js espera {status:'success', remoteTxnId}
+    // DEBUG resultado
+    log("TX RESULT ◀︎", { msgType, result: safeJson(result) });
+
+    // Adapter para finance-app.js
     const remoteTxnId = pickRemoteTxnId(result, idempotencyKey || uuidv4());
 
     return {
       status: "success",
       remoteTxnId,
-      result, // útil para debug/telemetría
-      _meta: { msgType, usedBridgeV1: true, originalTxnType: isIncome ? "income" : "expense" },
+      result,
+      _meta: { msgType, usedBridgeV1: true },
     };
   }
 
@@ -446,7 +534,17 @@ export async function waitForBridgeReady(opts = {}) {
 export async function getUserProfile(opts = {}) {
   const b = getOrCreateSingleton(opts);
   await bootPromise;
-  return b.request({ type: "GET_USER_PROFILE" }, opts.timeoutMs);
+
+  try {
+    const res = await b.request({ type: "GET_USER_PROFILE" }, opts.timeoutMs);
+    // eslint-disable-next-line no-console
+    console.log("[bridge] GET_USER_PROFILE OK", res);
+    return res;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("[bridge] GET_USER_PROFILE ERROR", { code: e?.code, message: e?.message, raw: e?.raw });
+    throw e;
+  }
 }
 
 export async function sendTransactionToHost(payload, idempotencyKey, opts = {}) {
