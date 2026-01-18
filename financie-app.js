@@ -456,7 +456,6 @@ export class FinancieApp {
         phrase,
         phraseHintLabel: t('send.resendConfirm.phraseHint'),
         placeholder: t('send.resendConfirm.placeholder'),
-        copyLabel: t('send.resendConfirm.copy'),
         cancelLabel: t('send.resendConfirm.cancel'),
         confirmLabel: t('send.resendConfirm.confirm'),
         variant: 'danger',
