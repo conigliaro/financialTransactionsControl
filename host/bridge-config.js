@@ -1,0 +1,6 @@
+export const ALLOWED_ORIGINS = [
+  'https://mybudgetsocial.com',
+  'https://staging.mybudgetsocial.com',
+  'http://localhost:5173',
+];
+

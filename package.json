@@ -1,0 +1,32 @@
+{
+  "name": "financialtransactionscontrol",
+  "version": "1.0.0",
+  "description": "This is a mini-app for managing financial movements, designed to be embedded in an iframe.",
+  "main": "app.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "NODE_OPTIONS=\"--experimental-require-module --disable-warning=ExperimentalWarning\" vitest run",
+    "test:watch": "NODE_OPTIONS=\"--experimental-require-module --disable-warning=ExperimentalWarning\" vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/conigliaro/financialTransactionsControl.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/conigliaro/financialTransactionsControl/issues"
+  },
+  "homepage": "https://github.com/conigliaro/financialTransactionsControl#readme",
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^27.0.1",
+    "vitest": "^4.0.17"
+  }
+}

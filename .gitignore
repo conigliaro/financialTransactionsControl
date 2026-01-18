@@ -1,0 +1,8 @@
+# Dependencies
+node_modules/
+
+# Local scratch / generated docs
+GEMINI.md
+Audit.md
+AUDIT.md
+
