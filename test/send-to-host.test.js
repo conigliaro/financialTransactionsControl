@@ -37,8 +37,10 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       initializeBridge: vi.fn(),
       destroy: vi.fn(),
       isReady: () => true,
+      waitForReady: vi.fn(async () => true),
       getActiveOrigin: () => 'https://mybudgetsocial.com',
       sendTransactionToHost,
+      getUserProfile: vi.fn(),
     });
 
     const app = new FinancieApp();
@@ -87,8 +89,10 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       initializeBridge: vi.fn(),
       destroy: vi.fn(),
       isReady: () => true,
+      waitForReady: vi.fn(async () => true),
       getActiveOrigin: () => 'https://mybudgetsocial.com',
       sendTransactionToHost,
+      getUserProfile: vi.fn(),
     });
 
     const app = new FinancieApp();
@@ -128,8 +132,10 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       initializeBridge: vi.fn(),
       destroy: vi.fn(),
       isReady: () => false,
+      waitForReady: vi.fn(async () => false),
       getActiveOrigin: () => null,
       sendTransactionToHost: vi.fn(),
+      getUserProfile: vi.fn(),
     });
     const app = new FinancieApp();
     await app.init();
@@ -184,8 +190,10 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       initializeBridge: vi.fn(),
       destroy: vi.fn(),
       isReady: () => false,
+      waitForReady: vi.fn(async () => false),
       getActiveOrigin: () => null,
       sendTransactionToHost: vi.fn(),
+      getUserProfile: vi.fn(),
     });
     const app = new FinancieApp();
     await app.init();

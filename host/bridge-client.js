@@ -13,6 +13,10 @@ function safeMessageType(data) {
   return typeof type === 'string' ? type : null;
 }
 
+function isBridgeV1ErrorCode(x) {
+  return x === 'MISSING_PERMISSION' || x === 'NOT_AUTHED' || x === 'UNKNOWN';
+}
+
 function isHandshakeMessage(type, data) {
   if (type === 'HOST_CONTEXT') return true;
   if (type === 'MBS_HOST_CONTEXT') return true;
@@ -31,8 +35,10 @@ export function createBridgeClient({
 } = {}) {
   const pending = new Map();
   const warnedOrigins = new Set();
+  const readyWaiters = new Set();
 
   let destroyed = false;
+  let initialized = false;
   let ready = false;
   let activeOrigin = null;
 
@@ -42,6 +48,17 @@ export function createBridgeClient({
     console.warn(`[bridge] Ignoring message from disallowed origin: ${origin}`);
   }
 
+  function _notifyReady() {
+    for (const fn of readyWaiters) {
+      try {
+        fn(true);
+      } catch {
+        // no-op
+      }
+      readyWaiters.delete(fn);
+    }
+  }
+
   function postToHost(message) {
     if (!activeOrigin) {
       const err = new Error('Host not connected');
@@ -49,6 +66,30 @@ export function createBridgeClient({
       throw err;
     }
     parentWindow.postMessage(message, activeOrigin);
+  }
+
+  function request(msg, timeoutMs) {
+    if (!isReady()) {
+      const err = new Error('Host not connected');
+      err.code = 'HOST_NOT_CONNECTED';
+      return Promise.reject(err);
+    }
+    const requestId = uuidv4();
+    const tms = Math.max(500, Number(timeoutMs ?? defaultTimeoutMs) || DEFAULT_TIMEOUT_MS);
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pending.delete(requestId);
+        reject(Object.assign(new Error('timeout'), { code: 'TIMEOUT' }));
+      }, tms);
+      pending.set(requestId, { resolve, reject, timer });
+      try {
+        postToHost({ ...msg, requestId });
+      } catch (err) {
+        window.clearTimeout(timer);
+        pending.delete(requestId);
+        reject(err);
+      }
+    });
   }
 
   function onMessage(event) {
@@ -66,6 +107,7 @@ export function createBridgeClient({
     if (!ready && isHandshakeMessage(type, event.data)) {
       activeOrigin = origin;
       ready = true;
+      _notifyReady();
       return;
     }
 
@@ -83,6 +125,26 @@ export function createBridgeClient({
       entry.resolve(event.data);
       return;
     }
+
+    if (type === 'RESULT') {
+      window.clearTimeout(entry.timer);
+      pending.delete(requestId);
+      entry.resolve(event.data?.result);
+      return;
+    }
+
+    if (type === 'ERROR') {
+      const err = event.data?.error;
+      const code = err?.code;
+      const message = err?.message;
+      if (!isBridgeV1ErrorCode(code) || typeof message !== 'string') return;
+      window.clearTimeout(entry.timer);
+      pending.delete(requestId);
+      const e = new Error(message);
+      e.code = code;
+      entry.reject(e);
+      return;
+    }
   }
 
   function initializeBridge() {
@@ -91,7 +153,10 @@ export function createBridgeClient({
       err.code = 'BRIDGE_DESTROYED';
       return Promise.reject(err);
     }
-    selfWindow.addEventListener('message', onMessage);
+    if (!initialized) {
+      initialized = true;
+      selfWindow.addEventListener('message', onMessage);
+    }
     for (const origin of allowedOrigins) {
       parentWindow.postMessage({ type: 'APP_READY' }, origin);
     }
@@ -101,16 +166,39 @@ export function createBridgeClient({
   function destroy() {
     if (destroyed) return;
     destroyed = true;
-    selfWindow.removeEventListener('message', onMessage);
+    if (initialized) selfWindow.removeEventListener('message', onMessage);
     for (const [id, entry] of pending.entries()) {
       window.clearTimeout(entry.timer);
       entry.reject(Object.assign(new Error('Bridge destroyed'), { code: 'BRIDGE_DESTROYED' }));
       pending.delete(id);
     }
+    for (const fn of readyWaiters) {
+      try {
+        fn(false);
+      } catch {
+        // no-op
+      }
+      readyWaiters.delete(fn);
+    }
   }
 
   function isReady() {
     return ready && Boolean(activeOrigin);
+  }
+
+  function waitForReady({ timeoutMs } = {}) {
+    if (isReady()) return Promise.resolve(true);
+    const tms = Math.max(250, Number(timeoutMs ?? defaultTimeoutMs) || DEFAULT_TIMEOUT_MS);
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        readyWaiters.delete(resolve);
+        resolve(false);
+      }, tms);
+      readyWaiters.add((ok) => {
+        window.clearTimeout(timer);
+        resolve(Boolean(ok));
+      });
+    });
   }
 
   function sendTransactionToHost(payload, idempotencyKey, { timeoutMs } = {}) {
@@ -156,6 +244,10 @@ export function createBridgeClient({
     });
   }
 
+  function getUserProfile({ timeoutMs } = {}) {
+    return request({ type: 'GET_USER_PROFILE' }, timeoutMs);
+  }
+
   function getActiveOrigin() {
     return activeOrigin;
   }
@@ -164,8 +256,10 @@ export function createBridgeClient({
     initializeBridge,
     destroy,
     isReady,
+    waitForReady,
     getActiveOrigin,
     sendTransactionToHost,
+    getUserProfile,
   };
 }
 
@@ -181,6 +275,22 @@ export function sendTransactionToHost(payload, idempotencyKey, opts) {
   return bridgeSingleton.sendTransactionToHost(payload, idempotencyKey, opts);
 }
 
+export function waitForBridgeReady(opts) {
+  if (!bridgeSingleton) bridgeSingleton = createBridgeClient();
+  if (typeof bridgeSingleton.waitForReady !== 'function') return Promise.resolve(false);
+  return bridgeSingleton.waitForReady(opts);
+}
+
+export function getUserProfile(opts) {
+  if (!bridgeSingleton) bridgeSingleton = createBridgeClient();
+  if (typeof bridgeSingleton.getUserProfile !== 'function') {
+    const err = new Error('Bridge method not available');
+    err.code = 'UNKNOWN';
+    return Promise.reject(err);
+  }
+  return bridgeSingleton.getUserProfile(opts);
+}
+
 export function isBridgeReady() {
   if (!bridgeSingleton) return false;
   return bridgeSingleton.isReady();
@@ -189,6 +299,11 @@ export function isBridgeReady() {
 export function __resetBridgeForTests() {
   if (bridgeSingleton) bridgeSingleton.destroy();
   bridgeSingleton = null;
+  try {
+    window.dispatchEvent(new CustomEvent('bridge:user-profile', { detail: { username: null } }));
+  } catch {
+    // no-op
+  }
 }
 
 export function __setBridgeForTests(bridge) {

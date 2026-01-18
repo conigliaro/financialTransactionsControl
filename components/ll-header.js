@@ -30,6 +30,7 @@ class LlHeader extends HTMLElement {
   connectedCallback() {
     window.addEventListener('i18n:updated', this._onI18nUpdated);
     window.addEventListener('resize', this._onResize);
+    window.addEventListener('bridge:user-profile', this._onBridgeUserProfile);
     this.shadowRoot.addEventListener('click', (e) => {
       if (this._eventPathHasId(e, 'back-btn')) {
         this.dispatchEvent(new CustomEvent('ll-nav', { bubbles: true, composed: true, detail: { view: 'main' } }));
@@ -46,6 +47,7 @@ class LlHeader extends HTMLElement {
   disconnectedCallback() {
     window.removeEventListener('i18n:updated', this._onI18nUpdated);
     window.removeEventListener('resize', this._onResize);
+    window.removeEventListener('bridge:user-profile', this._onBridgeUserProfile);
   }
 
   setPeriodOptions({ months, years, month, year }) {
@@ -74,6 +76,15 @@ class LlHeader extends HTMLElement {
     this._userName = name || null;
     this.render();
   }
+
+  _onBridgeUserProfile = (e) => {
+    const username = e?.detail?.username;
+    if (typeof username === 'string' && username.trim()) {
+      this.setUser({ name: username.trim() });
+      return;
+    }
+    this.setUser({ name: null });
+  };
 
   setCompany({ name, subtitle } = {}) {
     this._companyName = name == null ? null : String(name);
@@ -158,7 +169,7 @@ class LlHeader extends HTMLElement {
     const sheet = this.shadowRoot.getElementById('user-sheet');
     if (!sheet) return;
     const selected = await sheet.open({
-      title: t('menu'),
+      title: this._displayUserName(),
       items: [
         { value: 'vendors', label: t('vendors') },
         { value: 'expenseTypes', label: t('expense.types') },

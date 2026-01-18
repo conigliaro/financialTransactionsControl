@@ -12,7 +12,7 @@ import './components/ll-company-settings.js';
 import { showToast } from './components/ui-toast.js';
 import { dialog } from './components/ui-dialog.js';
 import { uuidv4 } from './utils/uuid.js';
-import { isBridgeReady, sendTransactionToHost } from './host/bridge-client.js';
+import { getUserProfile, initializeBridge as initBridge, isBridgeReady, sendTransactionToHost, waitForBridgeReady } from './host/bridge-client.js';
 
 export class FinancieApp {
   constructor() {
@@ -24,9 +24,15 @@ export class FinancieApp {
     this.currentView = 'main';
     this.currentCurrencyCode = 'EUR';
     this._sendingMovementIds = new Set();
+    this._bridgeProfileLoaded = false;
   }
 
   async init() {
+    try {
+      await initBridge();
+    } catch {
+      // Bridge is optional in standalone mode.
+    }
     await db.open();
     await this.loadLanguage();
     await this.loadTheme();
@@ -38,6 +44,27 @@ export class FinancieApp {
     this.populateMonthYearSelectors();
     await this.populateCatalogOptions();
     this.setView('main');
+
+    void this._loadBridgeUserProfileOnce();
+  }
+
+  async _loadBridgeUserProfileOnce() {
+    if (this._bridgeProfileLoaded) return;
+    this._bridgeProfileLoaded = true;
+
+    const ready = await waitForBridgeReady({ timeoutMs: 8000 });
+    if (!ready || !isBridgeReady()) return;
+
+    try {
+      const res = await getUserProfile({ timeoutMs: 8000 });
+      const username = res?.profile?.username;
+      if (typeof username !== 'string' || !username.trim()) return;
+      const name = username.trim();
+      this.header?.setUser?.({ name });
+      window.dispatchEvent(new CustomEvent('bridge:user-profile', { detail: { username: name } }));
+    } catch {
+      // NOT_AUTHED / MISSING_PERMISSION / UNKNOWN / TIMEOUT: keep anonymous, no spam.
+    }
   }
 
   addEventListeners() {
