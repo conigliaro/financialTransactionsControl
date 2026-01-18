@@ -1,3 +1,5 @@
+import { t } from '../i18n/loader.js';
+
 function xmlEscape(text) {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
@@ -240,9 +242,18 @@ function buildSheetXml({ movements, companyName, month, year, currencyCode }) {
     { width: 26 }, // FORNECEDOR
   ];
 
-  const title = 'Controle de movimentação financeira';
-  const companyText = `Empresa: ${String(companyName || '').trim() || ''}`.trim();
-  const headers = ['DATA', 'VALOR DOC.', 'JUROS/MULTAS', 'DESCONTOS', 'VALOR PAGO', 'TIPO DA DESPESA', 'FORNECEDOR'];
+  const title = t('xlsx.title');
+  const companyLabel = t('xlsx.label.company');
+  const companyText = `${String(companyLabel || '').trim()} ${String(companyName || '').trim() || ''}`.trim();
+  const headers = [
+    t('xlsx.col.date'),
+    t('xlsx.col.docValue'),
+    t('xlsx.col.interest'),
+    t('xlsx.col.discount'),
+    t('xlsx.col.paidValue'),
+    t('xlsx.col.expenseType'),
+    t('xlsx.col.vendor'),
+  ];
 
   const rows = [];
   const addCell = (cells, c, valueXml) => {

@@ -184,4 +184,15 @@ export default {
   "firstRun.body.3": "As transações enviadas para o seu painel de Finanças continuarão lá, pois ficam salvas na sua conta.",
   "firstRun.cta": "Entendi",
   "firstRun.dontShowAgain": "Não mostrar novamente"
+  ,
+  "xlsx.title": "Controle de movimentação financeira",
+  "xlsx.col.date": "DATA:",
+  "xlsx.col.docValue": "VALOR DOC.",
+  "xlsx.col.interest": "JUROS/MULTAS",
+  "xlsx.col.discount": "DESCONTOS",
+  "xlsx.col.paidValue": "VALOR PAGO",
+  "xlsx.col.expenseType": "TIPO DA DESPESA",
+  "xlsx.col.vendor": "FORNECEDOR",
+  "xlsx.label.company": "Empresa:",
+  "xlsx.label.period": "Período:"
 };

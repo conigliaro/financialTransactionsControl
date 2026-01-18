@@ -1,14 +1,41 @@
 import { describe, it, expect, vi } from 'vitest';
 
+let lang = 'pt-BR';
+const dict = {
+  'pt-BR': {
+    'xlsx.title': 'Controle de movimentação financeira',
+    'xlsx.col.date': 'DATA:',
+    'xlsx.col.docValue': 'VALOR DOC.',
+    'xlsx.col.interest': 'JUROS/MULTAS',
+    'xlsx.col.discount': 'DESCONTOS',
+    'xlsx.col.paidValue': 'VALOR PAGO',
+    'xlsx.col.expenseType': 'TIPO DA DESPESA',
+    'xlsx.col.vendor': 'FORNECEDOR',
+    'xlsx.label.company': 'Empresa:',
+    'xlsx.label.period': 'Período:',
+  },
+  es: {
+    'xlsx.title': 'Control de movimientos financieros',
+    'xlsx.col.date': 'FECHA:',
+    'xlsx.col.paidValue': 'VALOR PAGADO',
+    'xlsx.label.company': 'Empresa:',
+  },
+};
+
 vi.mock('../i18n/loader.js', () => ({
-  t: (key) => key,
+  t: (key) => dict[lang]?.[key] ?? key,
+  __setLang: (next) => {
+    lang = next;
+  },
 }));
 
+import * as i18n from '../i18n/loader.js';
 import { buildXlsxEntries, generateXlsxBuffer } from '../utils/xlsx-export.js';
 import '../components/ll-export-dialog.js';
 
 describe('XLSX export (template-like)', () => {
   it('builds expected worksheet XML structure', () => {
+    i18n.__setLang('pt-BR');
     const entries = buildXlsxEntries({
       movements: [
         {
@@ -33,6 +60,7 @@ describe('XLSX export (template-like)', () => {
     expect(sheet).toContain('Empresa: ACME LLC');
     expect(sheet).toContain('<mergeCell ref="A1:E1"/>');
     expect(sheet).toContain('<mergeCell ref="F1:G1"/>');
+    expect(sheet).toContain('DATA:');
     expect(sheet).toContain('VALOR PAGO');
     expect(sheet).toContain('TIPO DA DESPESA');
     expect(sheet).toContain('FORNECEDOR');
@@ -48,6 +76,21 @@ describe('XLSX export (template-like)', () => {
     });
     expect(buf).toBeInstanceOf(Uint8Array);
     expect(String.fromCharCode(buf[0], buf[1])).toBe('PK');
+  });
+
+  it('localizes title and headers in Spanish (spot check)', () => {
+    i18n.__setLang('es');
+    const entries = buildXlsxEntries({
+      movements: [],
+      companyName: 'ACME',
+      month: 1,
+      year: 2026,
+      currencyCode: 'EUR',
+    });
+    const sheet = entries.find((e) => e.path === 'xl/worksheets/sheet1.xml')?.data;
+    expect(sheet).toContain('Control de movimientos financieros');
+    expect(sheet).toContain('FECHA:');
+    expect(sheet).toContain('VALOR PAGADO');
   });
 });
 
@@ -67,4 +110,3 @@ describe('Export dialog UI', () => {
     expect(xlsxBtn.disabled).toBe(false);
   });
 });
-

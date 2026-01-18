@@ -184,4 +184,15 @@ export default {
   "firstRun.body.3": "Las transacciones que envíes a tu tablero de Finanzas se mantendrán allí, porque quedan guardadas en tu cuenta.",
   "firstRun.cta": "Entendido",
   "firstRun.dontShowAgain": "No volver a mostrar"
+  ,
+  "xlsx.title": "Control de movimientos financieros",
+  "xlsx.col.date": "FECHA:",
+  "xlsx.col.docValue": "VALOR DOC.",
+  "xlsx.col.interest": "INTERESES/MULTAS",
+  "xlsx.col.discount": "DESCUENTOS",
+  "xlsx.col.paidValue": "VALOR PAGADO",
+  "xlsx.col.expenseType": "TIPO DE GASTO",
+  "xlsx.col.vendor": "PROVEEDOR",
+  "xlsx.label.company": "Empresa:",
+  "xlsx.label.period": "Período:"
 };

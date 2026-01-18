@@ -184,4 +184,15 @@ export default {
   "firstRun.body.3": "Transactions you send to your Finance dashboard will remain there, because they are saved in your account.",
   "firstRun.cta": "Got it",
   "firstRun.dontShowAgain": "Don’t show again"
+  ,
+  "xlsx.title": "Financial movement control",
+  "xlsx.col.date": "DATE:",
+  "xlsx.col.docValue": "DOC VALUE",
+  "xlsx.col.interest": "INTEREST/FEES",
+  "xlsx.col.discount": "DISCOUNTS",
+  "xlsx.col.paidValue": "PAID AMOUNT",
+  "xlsx.col.expenseType": "EXPENSE TYPE",
+  "xlsx.col.vendor": "VENDOR",
+  "xlsx.label.company": "Company:",
+  "xlsx.label.period": "Period:"
 };

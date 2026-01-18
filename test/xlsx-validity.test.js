@@ -1,4 +1,25 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+let lang = 'pt-BR';
+const dict = {
+  'pt-BR': {
+    'xlsx.title': 'Controle de movimentação financeira',
+    'xlsx.col.date': 'DATA:',
+    'xlsx.col.docValue': 'VALOR DOC.',
+    'xlsx.col.interest': 'JUROS/MULTAS',
+    'xlsx.col.discount': 'DESCONTOS',
+    'xlsx.col.paidValue': 'VALOR PAGO',
+    'xlsx.col.expenseType': 'TIPO DA DESPESA',
+    'xlsx.col.vendor': 'FORNECEDOR',
+    'xlsx.label.company': 'Empresa:',
+    'xlsx.label.period': 'Período:',
+  },
+};
+
+vi.mock('../i18n/loader.js', () => ({
+  t: (key) => dict[lang]?.[key] ?? key,
+}));
+
 import { generateXlsxBuffer } from '../utils/xlsx-export.js';
 
 function findEndOfCentralDir(buf) {
@@ -138,4 +159,3 @@ describe('XLSX validity (ZIP + XML well-formed)', () => {
     parseXml(files.get('xl/styles.xml'));
   });
 });
-
