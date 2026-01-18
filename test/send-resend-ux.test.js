@@ -168,6 +168,7 @@ describe('Resend UX + sending indicator', () => {
   });
 
   it('shows per-row "Sending…" state while send promise is pending', async () => {
+    vi.spyOn(dialog, 'confirm').mockResolvedValue(true);
     let resolveSend;
     const sendTransactionToHost = vi.fn(
       () =>

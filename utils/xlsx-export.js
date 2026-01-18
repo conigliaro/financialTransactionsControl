@@ -155,7 +155,8 @@ function buildStylesXml({ currencyCode = 'EUR' } = {}) {
   const code = String(currencyCode || 'EUR').toUpperCase();
   const dateFmtId = 164;
   const moneyFmtId = 165;
-  const moneyFmt = code === 'BRL' ? `"R$" #,##0.00` : `"${xmlEscape(code)}" #,##0.00`;
+  const moneyFmtRaw = code === 'BRL' ? `"R$" #,##0.00` : `"${code}" #,##0.00`;
+  const moneyFmt = xmlEscape(moneyFmtRaw);
   const dateFmt = 'dd/mm/yyyy';
 
   const darkGray = 'FF6B6B6B';
@@ -342,6 +343,7 @@ export function buildXlsxEntries({ movements, companyName, month, year, currency
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
   <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
   <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
 </Types>`;
@@ -364,6 +366,7 @@ export function buildXlsxEntries({ movements, companyName, month, year, currency
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>
 </Relationships>`;
 
   const core = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -380,6 +383,41 @@ export function buildXlsxEntries({ movements, companyName, month, year, currency
   <Application>LedgerLite</Application>
 </Properties>`;
 
+  // Minimal theme file improves compatibility with Excel/Numbers.
+  const theme = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">
+  <a:themeElements>
+    <a:clrScheme name="Office">
+      <a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+      <a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+      <a:dk2><a:srgbClr val="1F497D"/></a:dk2>
+      <a:lt2><a:srgbClr val="EEECE1"/></a:lt2>
+      <a:accent1><a:srgbClr val="4F81BD"/></a:accent1>
+      <a:accent2><a:srgbClr val="C0504D"/></a:accent2>
+      <a:accent3><a:srgbClr val="9BBB59"/></a:accent3>
+      <a:accent4><a:srgbClr val="8064A2"/></a:accent4>
+      <a:accent5><a:srgbClr val="4BACC6"/></a:accent5>
+      <a:accent6><a:srgbClr val="F79646"/></a:accent6>
+      <a:hlink><a:srgbClr val="0000FF"/></a:hlink>
+      <a:folHlink><a:srgbClr val="800080"/></a:folHlink>
+    </a:clrScheme>
+    <a:fontScheme name="Office">
+      <a:majorFont>
+        <a:latin typeface="Calibri"/>
+      </a:majorFont>
+      <a:minorFont>
+        <a:latin typeface="Calibri"/>
+      </a:minorFont>
+    </a:fontScheme>
+    <a:fmtScheme name="Office">
+      <a:fillStyleLst/>
+      <a:lnStyleLst/>
+      <a:effectStyleLst/>
+      <a:bgFillStyleLst/>
+    </a:fmtScheme>
+  </a:themeElements>
+</a:theme>`;
+
   const styles = buildStylesXml({ currencyCode });
   const sheet = buildSheetXml({ movements, companyName, month, year, currencyCode });
 
@@ -391,6 +429,7 @@ export function buildXlsxEntries({ movements, companyName, month, year, currency
     { path: 'xl/workbook.xml', data: workbook },
     { path: 'xl/_rels/workbook.xml.rels', data: workbookRels },
     { path: 'xl/styles.xml', data: styles },
+    { path: 'xl/theme/theme1.xml', data: theme },
     { path: 'xl/worksheets/sheet1.xml', data: sheet },
   ];
 }

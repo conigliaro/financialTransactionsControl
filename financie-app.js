@@ -463,6 +463,43 @@ export class FinancieApp {
       if (!confirmed) return;
     }
 
+    const isFirstSuccessfulSend = !alreadySent && !lastSuccess;
+
+    // If host is not connected, keep the current behavior (log failed attempt + toast).
+    if (!isBridgeReady()) {
+      const idempotencyKey = this._idempotencyKeyFor(movement);
+      const payload = this._buildSendPayload(movement);
+
+      const attemptId = uuidv4();
+      const createdAt = Date.now();
+      await db.add('movement_send_attempts', {
+        attemptId,
+        movementId: id,
+        createdAt,
+        status: 'failed',
+        idempotencyKey,
+        requestPayload: payload,
+        responsePayload: null,
+        errorCode: 'HOST_NOT_CONNECTED',
+        errorMessage: 'HOST_NOT_CONNECTED',
+        durationMs: 0,
+        remoteTxnId: null,
+      });
+      showToast(t('send.host_not_connected'), { variant: 'warning' });
+      return;
+    }
+
+    if (isFirstSuccessfulSend) {
+      const ok = await dialog.confirm({
+        title: t('send.confirmFirst.title'),
+        message: t('send.confirmFirst.body'),
+        confirmLabel: t('send.confirmFirst.confirm'),
+        cancelLabel: t('send.confirmFirst.cancel'),
+        variant: 'primary',
+      });
+      if (!ok) return;
+    }
+
     this._sendingMovementIds.add(id);
     this.movementList?.setSendingMovementIds?.(Array.from(this._sendingMovementIds));
     try {
@@ -475,24 +512,6 @@ export class FinancieApp {
       const attemptId = uuidv4();
       const createdAt = Date.now();
       const start = (globalThis?.performance?.now?.() ?? Date.now());
-
-      if (!isBridgeReady()) {
-        await db.add('movement_send_attempts', {
-          attemptId,
-          movementId: id,
-          createdAt,
-          status: 'failed',
-          idempotencyKey,
-          requestPayload: payload,
-          responsePayload: null,
-          errorCode: 'HOST_NOT_CONNECTED',
-          errorMessage: 'HOST_NOT_CONNECTED',
-          durationMs: 0,
-          remoteTxnId: null,
-        });
-        showToast(t('send.host_not_connected'), { variant: 'warning' });
-        return;
-      }
 
       await db.add('movement_send_attempts', {
         attemptId,

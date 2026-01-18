@@ -67,6 +67,7 @@ describe('Send error dialog shows real bridge error', () => {
   });
 
   it('shows host message + code for CATEGORY_NOT_FOUND', async () => {
+    vi.spyOn(dialog, 'confirm').mockResolvedValue(true);
     __setBridgeForTests({
       initializeBridge: vi.fn(),
       destroy: vi.fn(),

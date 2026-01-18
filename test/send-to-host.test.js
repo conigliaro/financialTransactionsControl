@@ -11,6 +11,7 @@ vi.mock('../i18n/loader.js', () => ({
 import { db } from '../db/indexeddb.js';
 import { FinancieApp } from '../financie-app.js';
 import { __resetBridgeForTests, __setBridgeForTests } from '../host/bridge-client.js';
+import { dialog } from '../components/ui-dialog.js';
 
 async function resetIndexedDb() {
   const dbs = await indexedDB.databases();
@@ -32,6 +33,7 @@ describe('Send to host (idempotency + attempts + change log)', () => {
   });
 
   it('stores attempt, mapping, and status change on send success', async () => {
+    vi.spyOn(dialog, 'confirm').mockResolvedValue(true);
     const sendTransactionToHost = vi.fn(async () => ({ status: 'success', remoteTxnId: 'r1' }));
     __setBridgeForTests({
       initializeBridge: vi.fn(),
@@ -87,6 +89,7 @@ describe('Send to host (idempotency + attempts + change log)', () => {
   });
 
   it('stores failed attempt and allows retry with same idempotencyKey for same rev', async () => {
+    vi.spyOn(dialog, 'confirm').mockResolvedValue(true);
     const sendTransactionToHost = vi.fn();
     sendTransactionToHost.mockRejectedValueOnce(Object.assign(new Error('nope'), { code: 'TIMEOUT' }));
     sendTransactionToHost.mockResolvedValueOnce({ status: 'success', remoteTxnId: 'r2' });
