@@ -1,6 +1,6 @@
-// host/bridge-client.js (DEBUG SIMPLE, CORRECTO)
+// host/bridge-client.js (DEBUG SIMPLE, AUTO-INFER allowedParentOrigin)
 //
-// Exporta lo que tu finance-app.js espera:
+// Exporta lo que finance-app.js espera:
 //   import {
 //     getUserProfile,
 //     initializeBridge as initBridge,
@@ -10,10 +10,10 @@
 //   } from "./host/bridge-client.js";
 //
 // Objetivo:
-// - Logs claros al cargar (env + mensajes entrantes + handshake)
+// - Log claro al cargar (env + mensajes entrantes)
+// - Auto-infer allowedParentOrigin si NO lo pasan (desde ancestorOrigins/referrer)
 // - NO bloquear requests por "ready" (estilo starter kit)
-// - Auto-boot: si llamas getUserProfile/sendTransaction sin init, igual bootea
-// - Soporta Bridge v1 (RESULT/ERROR/HOST_CONTEXT) + compat legacy (MBS_*)
+// - Bridge v1 (RESULT/ERROR/HOST_CONTEXT) + compat legacy (MBS_*)
 // - Diagnóstico: REQUEST_HOST_CONTEXT automático al boot
 //
 import { uuidv4 } from "../utils/uuid.js";
@@ -41,8 +41,31 @@ function inferHostWindow() {
   return null;
 }
 
+function inferAllowedOrigin(provided) {
+  // 1) si viene explícito, úsalo
+  const fromProvided = normalizeAllowedOrigin(provided);
+  if (fromProvided) return fromProvided;
+
+  // 2) mejor fuente en iframes: ancestorOrigins[0]
+  try {
+    const ao = window.location?.ancestorOrigins;
+    if (ao && ao.length) {
+      const fromAncestor = normalizeAllowedOrigin(ao[0]);
+      if (fromAncestor) return fromAncestor;
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3) fallback: referrer
+  const fromReferrer = normalizeAllowedOrigin(document.referrer || "");
+  if (fromReferrer) return fromReferrer;
+
+  return "";
+}
+
 export function createBridgeClient({
-  allowedParentOrigin, // REQUIRED: exact host origin (e.g. https://mybudgetsocial.com)
+  allowedParentOrigin, // opcional ahora (se infiere)
   parentWindow,
   selfWindow = window,
   defaultTimeoutMs = DEFAULT_TIMEOUT_MS,
@@ -57,7 +80,8 @@ export function createBridgeClient({
   let ready = false;
   let activeOrigin = null;
 
-  const allowedOrigin = normalizeAllowedOrigin(allowedParentOrigin);
+  // OJO: ahora se infiere si no lo pasan
+  let allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
   const hostWindow = parentWindow ?? inferHostWindow();
 
   function log(...args) {
@@ -79,15 +103,19 @@ export function createBridgeClient({
   }
 
   function dumpEnv() {
-    const ancestor0 =
-      window.location?.ancestorOrigins && window.location.ancestorOrigins.length
-        ? window.location.ancestorOrigins[0]
-        : null;
+    let ancestor0 = null;
+    try {
+      const ao = window.location?.ancestorOrigins;
+      ancestor0 = ao && ao.length ? ao[0] : null;
+    } catch {
+      ancestor0 = null;
+    }
 
     log("boot env", {
       selfUrl: window.location.href,
       selfOrigin: window.location.origin,
-      allowedOrigin,
+      allowedParentOriginProvided: allowedParentOrigin || null,
+      inferredAllowedOrigin: allowedOrigin || null,
       referrer: document.referrer || null,
       ancestor0,
       hasParent: !!window.parent,
@@ -100,7 +128,7 @@ export function createBridgeClient({
       })(),
       hasOpener: !!window.opener,
       hostWindow: hostWindow ? (hostWindow === window.parent ? "parent" : "opener") : null,
-      hint: "allowedParentOrigin debe ser EXACTAMENTE el ORIGIN del host real (mira ancestor0/referrer).",
+      hint: "Si no pasas allowedParentOrigin, se infiere de ancestor0/referrer. Debe ser ORIGIN exacto (sin path).",
     });
   }
 
@@ -109,7 +137,7 @@ export function createBridgeClient({
       throw Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" });
     }
     if (!allowedOrigin) {
-      throw Object.assign(new Error("allowedParentOrigin is required"), {
+      throw Object.assign(new Error("allowedParentOrigin is required (or inferable)"), {
         code: "MISSING_ALLOWED_PARENT_ORIGIN",
       });
     }
@@ -165,7 +193,7 @@ export function createBridgeClient({
     const type = safeMessageType(event.data);
     if (!type) return;
 
-    // Log crudo para debug
+    // Log crudo
     log("message in", {
       type,
       origin: event.origin,
@@ -175,9 +203,15 @@ export function createBridgeClient({
       dataKeys: Object.keys(event.data || {}),
     });
 
+    // Si por alguna razón allowedOrigin aún no existe, intenta inferirlo aquí (último chance)
+    if (!allowedOrigin) {
+      allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
+      warn("allowedOrigin was empty; inferred now:", allowedOrigin || null);
+    }
+
     // 1) origin must match allowedOrigin
     if (!allowedOrigin) {
-      warn("blocked: missing allowedOrigin");
+      warn("blocked: missing allowedOrigin (no provided + no inferable)");
       return;
     }
     if (event.origin !== allowedOrigin) {
@@ -249,11 +283,14 @@ export function createBridgeClient({
   }
 
   function initializeBridge() {
+    // Refresca allowedOrigin justo al boot (por si llamaron init sin opts)
+    allowedOrigin = inferAllowedOrigin(allowedParentOrigin);
+
     dumpEnv();
 
     if (!allowedOrigin) {
       error(
-        "NO CONNECT: allowedParentOrigin inválido o vacío. Debe ser el ORIGIN exacto del host."
+        "NO CONNECT: allowedParentOrigin vacío/no inferible. Pasa allowedParentOrigin o revisa ancestorOrigins/referrer."
       );
       return Promise.reject(
         Object.assign(new Error("allowedParentOrigin is required"), {
@@ -279,19 +316,19 @@ export function createBridgeClient({
     // 1) enviar APP_READY
     try {
       postToHost({ type: "APP_READY" });
-      log("sent APP_READY");
+      log("sent APP_READY to", allowedOrigin);
     } catch (e) {
       error("failed to post APP_READY", e);
     }
 
-    // 2) ping diagnóstico: REQUEST_HOST_CONTEXT
+    // 2) ping diagnóstico
     void request({ type: "REQUEST_HOST_CONTEXT" }, DIAG_REQUEST_HOST_CONTEXT_TIMEOUT_MS)
       .then((ctx) => log("REQUEST_HOST_CONTEXT OK", ctx))
       .catch((e) =>
         error("REQUEST_HOST_CONTEXT ERROR", { code: e.code, message: e.message, raw: e.raw })
       );
 
-    // 3) timeout de diagnóstico (no bloquea)
+    // 3) timeout de diagnóstico
     window.setTimeout(() => {
       if (isReady()) {
         log("bridge READY ✅", { activeOrigin });
@@ -300,14 +337,14 @@ export function createBridgeClient({
       error("bridge NOT READY ❌ (no handshake)", {
         allowedOrigin,
         hint: [
-          "1) allowedParentOrigin debe ser EXACTAMENTE el origin del host real (ver ancestor0/referrer).",
+          "1) allowedOrigin inferido debe ser el ORIGIN exacto del host (sin path).",
           "2) Debes estar embebido (iframe) o abierto por el host (window.opener). Si opener es null, el host pudo usar noopener.",
-          "3) Revisa en el host si al recibir APP_READY responde con HOST_CONTEXT/BRIDGE_READY.",
+          "3) Verifica en el host que al recibir APP_READY responde con HOST_CONTEXT/BRIDGE_READY.",
         ],
       });
     }, DIAG_READY_TIMEOUT_MS);
 
-    return Promise.resolve({ ok: true });
+    return Promise.resolve({ ok: true, allowedOrigin });
   }
 
   async function sendTransactionToHost(payload, idempotencyKey, { timeoutMs } = {}) {
@@ -315,12 +352,12 @@ export function createBridgeClient({
       throw Object.assign(new Error("Host window not available"), { code: "NO_HOST_WINDOW" });
     }
     if (!allowedOrigin) {
-      throw Object.assign(new Error("allowedParentOrigin is required"), {
+      throw Object.assign(new Error("allowedParentOrigin is required (or inferable)"), {
         code: "MISSING_ALLOWED_PARENT_ORIGIN",
       });
     }
 
-    // Si el host NO soporta MBS_SEND_TRANSACTION, esto termina en TIMEOUT
+    // Si el host NO soporta MBS_SEND_TRANSACTION, esto termina en TIMEOUT (y lo verás en consola)
     return request(
       {
         type: "MBS_SEND_TRANSACTION",
@@ -340,7 +377,7 @@ export function createBridgeClient({
 }
 
 // ----------------------
-// Singleton helpers
+// Singleton exports
 // ----------------------
 
 let bridgeSingleton = null;
@@ -349,7 +386,6 @@ let bootPromise = null;
 function getOrCreateSingleton(opts) {
   if (!bridgeSingleton) bridgeSingleton = createBridgeClient(opts);
 
-  // Auto-boot one-shot
   if (!bootPromise) {
     bootPromise = bridgeSingleton.initializeBridge().catch((e) => {
       // eslint-disable-next-line no-console
@@ -374,7 +410,6 @@ export function isBridgeReady() {
 export async function waitForBridgeReady(opts = {}) {
   const b = getOrCreateSingleton(opts);
 
-  // Asegura boot
   try {
     await bootPromise;
   } catch {
