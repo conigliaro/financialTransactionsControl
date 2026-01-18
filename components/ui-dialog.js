@@ -65,6 +65,7 @@ class UiDialog extends HTMLElement {
     this._detailsText = '';
     this._modalToken = null;
     this._restoreFocusEl = null;
+    this._resultMapper = null;
   }
 
   connectedCallback() {
@@ -83,6 +84,10 @@ class UiDialog extends HTMLElement {
           </div>
           <div class="modal-body">
             <div id="message"></div>
+            <label class="dialog-check" id="opt-row" hidden>
+              <input type="checkbox" id="opt-check" />
+              <span id="opt-label"></span>
+            </label>
             <details class="dialog-details" id="details" hidden>
               <summary id="details-summary"></summary>
               <pre class="dialog-details-pre" id="details-pre"></pre>
@@ -139,12 +144,14 @@ class UiDialog extends HTMLElement {
   confirm({ title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', variant = 'primary' }) {
     return new Promise((resolve) => {
       this.resolve = resolve;
+      this._resultMapper = null;
       this._restoreFocusEl = document.activeElement;
       this.shadowRoot.getElementById('title').textContent = title;
       this.shadowRoot.getElementById('message').textContent = message;
       this.shadowRoot.getElementById('confirm-btn').textContent = confirmLabel;
       this.shadowRoot.getElementById('cancel-btn').textContent = cancelLabel;
       this._setDetails({ summary: '', details: '' });
+      this._setOptionRow(null);
 
       const confirmBtn = this.shadowRoot.getElementById('confirm-btn');
       confirmBtn.className = 'btn';
@@ -172,9 +179,11 @@ class UiDialog extends HTMLElement {
   alert({ title, message, details = '', detailsLabel = 'Details', closeLabel = 'Close', copyLabel = 'Copy details' }) {
     return new Promise((resolve) => {
       this.resolve = resolve;
+      this._resultMapper = null;
       this._restoreFocusEl = document.activeElement;
       this.shadowRoot.getElementById('title').textContent = title;
       this.shadowRoot.getElementById('message').textContent = message;
+      this._setOptionRow(null);
 
       const cancelBtn = this.shadowRoot.getElementById('cancel-btn');
       cancelBtn.hidden = true;
@@ -196,6 +205,44 @@ class UiDialog extends HTMLElement {
       this.style.display = 'flex';
       lockBodyScroll();
       this._modalToken = registerModal({ close: () => this._handle(true), restoreFocusEl: this._restoreFocusEl });
+      queueMicrotask(() => this.shadowRoot.getElementById('confirm-btn')?.focus());
+    });
+  }
+
+  firstRun({
+    title,
+    bodyLines = [],
+    ctaLabel = 'OK',
+    dontShowAgainLabel = "Don't show again",
+    defaultDontShowAgain = true,
+  }) {
+    return new Promise((resolve) => {
+      this.resolve = resolve;
+      this._restoreFocusEl = document.activeElement;
+
+      this.shadowRoot.getElementById('title').textContent = String(title || '');
+      const msg = Array.isArray(bodyLines) ? bodyLines.filter(Boolean).map((s) => String(s)) : [];
+      this.shadowRoot.getElementById('message').textContent = msg.join('\n\n');
+      this._setDetails({ summary: '', details: '' });
+      this._removeCopyButton();
+
+      const cancelBtn = this.shadowRoot.getElementById('cancel-btn');
+      cancelBtn.hidden = true;
+
+      const confirmBtn = this.shadowRoot.getElementById('confirm-btn');
+      confirmBtn.className = 'btn primary';
+      confirmBtn.textContent = String(ctaLabel || '');
+
+      this._setOptionRow({ label: dontShowAgainLabel, checked: Boolean(defaultDontShowAgain) });
+
+      this._resultMapper = (confirmed) => {
+        const checked = Boolean(this.shadowRoot.getElementById('opt-check')?.checked);
+        return { confirmed: Boolean(confirmed), dontShowAgain: Boolean(confirmed) && checked };
+      };
+
+      this.style.display = 'flex';
+      lockBodyScroll();
+      this._modalToken = registerModal({ close: () => this._handle(false), restoreFocusEl: this._restoreFocusEl });
       queueMicrotask(() => this.shadowRoot.getElementById('confirm-btn')?.focus());
     });
   }
@@ -238,8 +285,28 @@ class UiDialog extends HTMLElement {
       unregisterModal(token);
     }
     if (this.resolve) {
-      this.resolve(confirmed);
+      const mapper = this._resultMapper;
+      this._resultMapper = null;
+      const result = mapper ? mapper(confirmed) : confirmed;
+      this._setOptionRow(null);
+      this.resolve(result);
     }
+  }
+
+  _setOptionRow(option) {
+    const row = this.shadowRoot.getElementById('opt-row');
+    const check = this.shadowRoot.getElementById('opt-check');
+    const label = this.shadowRoot.getElementById('opt-label');
+    if (!row || !check || !label) return;
+    if (!option) {
+      row.hidden = true;
+      label.textContent = '';
+      check.checked = false;
+      return;
+    }
+    row.hidden = false;
+    label.textContent = String(option.label || '');
+    check.checked = Boolean(option.checked);
   }
 }
 

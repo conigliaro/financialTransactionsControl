@@ -97,6 +97,12 @@ export default {
   'send.retry': 'Reintentar',
   'send.success': 'Enviado correctamente.',
   'send.failed': 'Error al enviar.',
+  'send.error.title': 'Error al enviar',
+  'send.error.details': 'Detalles',
+  'send.error.codeLabel': 'Código',
+  'send.error.messageLabel': 'Mensaje',
+  'send.error.generic': 'No se pudo enviar la transacción.',
+  'send.error.category_not_found': 'La categoría seleccionada no existe en Finanzas.',
   'send.already_sent': 'Este movimiento ya fue enviado.',
   'send.host_not_connected': 'Host no conectado.',
   'send.in_progress': 'Envío en curso.',
@@ -149,4 +155,11 @@ export default {
   'month.10': 'Octubre',
   'month.11': 'Noviembre',
   'month.12': 'Diciembre',
+
+  "firstRun.title": "Importante",
+  "firstRun.body.1": "La información que registres en esta mini app se guarda en este dispositivo.",
+  "firstRun.body.2": "Si borras los datos del navegador o reinstalas el navegador, podrías perder esos registros.",
+  "firstRun.body.3": "Las transacciones que envíes a tu tablero de Finanzas se mantendrán allí, porque quedan guardadas en tu cuenta.",
+  "firstRun.cta": "Entendido",
+  "firstRun.dontShowAgain": "No volver a mostrar"
 };

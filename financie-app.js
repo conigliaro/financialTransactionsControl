@@ -47,7 +47,44 @@ export class FinancieApp {
     await this.populateCatalogOptions();
     this.setView('main');
 
+    await this._showFirstRunIfNeeded();
     void this._loadBridgeUserProfileOnce();
+  }
+
+  async _showFirstRunIfNeeded() {
+    try {
+      const env = globalThis?.process?.env;
+      const isTest = env?.NODE_ENV === 'test' || env?.VITEST === 'true';
+      const enabled =
+        Boolean(globalThis.__ENABLE_FIRST_RUN_DIALOG_TESTS) ||
+        Boolean(globalThis?.window?.__ENABLE_FIRST_RUN_DIALOG_TESTS);
+      if (isTest && !enabled) return;
+    } catch {
+      // no-op
+    }
+
+    try {
+      const dismissed = await db.get('meta', 'firstRunDismissed');
+      if (dismissed?.value === true) return;
+    } catch {
+      // ignore; fall through to show
+    }
+
+    const res = await dialog.firstRun({
+      title: t('firstRun.title'),
+      bodyLines: [t('firstRun.body.1'), t('firstRun.body.2'), t('firstRun.body.3')],
+      ctaLabel: t('firstRun.cta'),
+      dontShowAgainLabel: t('firstRun.dontShowAgain'),
+      defaultDontShowAgain: true,
+    });
+
+    if (res?.confirmed && res?.dontShowAgain) {
+      try {
+        await db.put('meta', { key: 'firstRunDismissed', value: true });
+      } catch {
+        // ignore
+      }
+    }
   }
 
   async _loadBridgeUserProfileOnce() {
@@ -301,6 +338,7 @@ export class FinancieApp {
       docValue: Number(movement?.docValue) || 0,
       interest: Number(movement?.interest) || 0,
       discount: Number(movement?.discount) || 0,
+      categoryId: movement?.categoryId,
       vendor: String(movement?.vendor || ''),
       expenseType: String(movement?.expenseType || ''),
       notes: String(movement?.notes || ''),
@@ -390,6 +428,12 @@ export class FinancieApp {
         response = await sendTransactionToHost(payload, idempotencyKey, { timeoutMs: 15_000 });
       } catch (err) {
         const durationMs = Math.max(0, (globalThis?.performance?.now?.() ?? Date.now()) - start);
+        const extracted = this._extractBridgeSendError(err);
+        const responsePayload =
+          extracted?.responsePayload ??
+          err?.responsePayload ??
+          (err?.raw ? { error: err.raw } : null) ??
+          null;
         await db.put('movement_send_attempts', {
           attemptId,
           movementId: id,
@@ -397,13 +441,13 @@ export class FinancieApp {
           status: 'failed',
           idempotencyKey,
           requestPayload: payload,
-          responsePayload: err?.responsePayload ?? null,
-          errorCode: String(err?.code || 'UNKNOWN'),
-          errorMessage: String(err?.message || err),
+          responsePayload,
+          errorCode: String(extracted?.code || err?.code || 'UNKNOWN'),
+          errorMessage: String(extracted?.message || err?.message || err),
           durationMs,
           remoteTxnId: null,
         });
-        showToast(t('send.failed'), { variant: 'danger' });
+        void this._showSendErrorDialog(extracted);
         return;
       }
 
@@ -425,7 +469,7 @@ export class FinancieApp {
           durationMs,
           remoteTxnId: null,
         });
-        showToast(t('send.failed'), { variant: 'danger' });
+        void this._showSendErrorDialog(this._extractBridgeSendError({ responsePayload: response }));
         return;
       }
 
@@ -471,6 +515,51 @@ export class FinancieApp {
     } finally {
       this._sendingMovementIds.delete(id);
     }
+  }
+
+  _extractBridgeSendError(err) {
+    const responsePayload = err?.responsePayload ?? null;
+    const raw = err?.raw ?? responsePayload?.error ?? null;
+    const code =
+      (typeof raw?.code === 'string' && raw.code) ||
+      (typeof responsePayload?.error?.code === 'string' && responsePayload.error.code) ||
+      (typeof err?.code === 'string' && err.code) ||
+      null;
+    const message =
+      (typeof raw?.message === 'string' && raw.message) ||
+      (typeof responsePayload?.error?.message === 'string' && responsePayload.error.message) ||
+      (typeof err?.message === 'string' && err.message) ||
+      null;
+    return { code, message, responsePayload };
+  }
+
+  _friendlySendErrorMessage(code) {
+    if (code === 'CATEGORY_NOT_FOUND') return t('send.error.category_not_found');
+    return t('send.error.generic');
+  }
+
+  async _showSendErrorDialog(extracted) {
+    const code = extracted?.code ? String(extracted.code) : '';
+    const hostMessage = extracted?.message ? String(extracted.message) : '';
+
+    const friendly = this._friendlySendErrorMessage(code);
+    const message = hostMessage ? `${friendly} — ${hostMessage}` : friendly;
+
+    const details = [
+      `${t('send.error.codeLabel')}: ${code || 'UNKNOWN'}`,
+      hostMessage ? `${t('send.error.messageLabel')}: ${hostMessage}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    await dialog.alert({
+      title: t('send.error.title'),
+      message,
+      detailsLabel: t('send.error.details'),
+      details,
+      closeLabel: t('close'),
+      copyLabel: t('copy.details'),
+    });
   }
 
   _diffMovement(before, after) {

@@ -41,6 +41,10 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       getActiveOrigin: () => 'https://mybudgetsocial.com',
       sendTransactionToHost,
       getUserProfile: vi.fn(),
+      request: vi.fn(async (msg) => {
+        if (msg?.type === 'GET_USER_PROFILE') return { profile: { username: '' } };
+        return {};
+      }),
     });
 
     const app = new FinancieApp();
@@ -93,6 +97,10 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       getActiveOrigin: () => 'https://mybudgetsocial.com',
       sendTransactionToHost,
       getUserProfile: vi.fn(),
+      request: vi.fn(async (msg) => {
+        if (msg?.type === 'GET_USER_PROFILE') return { profile: { username: '' } };
+        return {};
+      }),
     });
 
     const app = new FinancieApp();
@@ -136,6 +144,7 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       getActiveOrigin: () => null,
       sendTransactionToHost: vi.fn(),
       getUserProfile: vi.fn(),
+      request: vi.fn(async () => ({ profile: { username: '' } })),
     });
     const app = new FinancieApp();
     await app.init();
@@ -194,6 +203,7 @@ describe('Send to host (idempotency + attempts + change log)', () => {
       getActiveOrigin: () => null,
       sendTransactionToHost: vi.fn(),
       getUserProfile: vi.fn(),
+      request: vi.fn(async () => ({ profile: { username: '' } })),
     });
     const app = new FinancieApp();
     await app.init();

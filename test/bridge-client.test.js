@@ -7,34 +7,42 @@ describe('bridge-client security + request/response', () => {
     vi.restoreAllMocks();
   });
 
-  it('ignores messages from disallowed origins and stays not-ready', async () => {
-    const parentWindow = { postMessage: vi.fn() };
+  it('ignores RESULT from disallowed origin (request times out)', async () => {
+    const hostWindow = { postMessage: vi.fn() };
     const client = createBridgeClient({
-      allowedOrigins: ['https://allowed.test'],
-      parentWindow,
+      allowedParentOrigin: 'https://allowed.test',
+      parentWindow: hostWindow,
       selfWindow: window,
+      debug: false,
+      defaultTimeoutMs: 30,
     });
 
     await client.initializeBridge();
 
+    const req = client.request({ type: 'GET_USER_PROFILE' }, 30);
+    const sent = hostWindow.postMessage.mock.calls.at(-1);
+    const sentMsg = sent?.[0];
+    expect(typeof sentMsg?.requestId).toBe('string');
+
     window.dispatchEvent(
       new MessageEvent('message', {
         origin: 'https://evil.test',
-        source: parentWindow,
-        data: { type: 'BRIDGE_READY' },
+        source: hostWindow,
+        data: { type: 'RESULT', requestId: sentMsg.requestId, result: { profile: { username: 'x' } } },
       }),
     );
 
-    expect(client.isReady()).toBe(false);
-    await expect(client.sendTransactionToHost({ a: 1 }, 'm1:1')).rejects.toMatchObject({ code: 'HOST_NOT_CONNECTED' });
+    await expect(req).rejects.toMatchObject({ code: 'TIMEOUT' });
   });
 
-  it('accepts handshake from allowed origin, correlates request/response, and targets activeOrigin', async () => {
-    const parentWindow = { postMessage: vi.fn() };
+  it('accepts handshake from allowed origin and correlates RESULT by requestId', async () => {
+    const hostWindow = { postMessage: vi.fn() };
     const client = createBridgeClient({
-      allowedOrigins: ['https://allowed.test'],
-      parentWindow,
+      allowedParentOrigin: 'https://allowed.test',
+      parentWindow: hostWindow,
       selfWindow: window,
+      debug: false,
+      defaultTimeoutMs: 200,
     });
 
     await client.initializeBridge();
@@ -42,39 +50,26 @@ describe('bridge-client security + request/response', () => {
     window.dispatchEvent(
       new MessageEvent('message', {
         origin: 'https://allowed.test',
-        source: parentWindow,
+        source: hostWindow,
         data: { type: 'BRIDGE_READY' },
       }),
     );
 
-    expect(client.isReady()).toBe(true);
-    expect(client.getActiveOrigin()).toBe('https://allowed.test');
-
-    const p = client.sendTransactionToHost({ amount: 1 }, 'm1:1', { timeoutMs: 2000 });
-    expect(parentWindow.postMessage).toHaveBeenCalled();
-
-    const sent = parentWindow.postMessage.mock.calls.at(-1);
+    const p = client.request({ type: 'GET_USER_PROFILE' }, 200);
+    const sent = hostWindow.postMessage.mock.calls.at(-1);
     const sentMsg = sent?.[0];
-    const sentOrigin = sent?.[1];
-    expect(sentOrigin).toBe('https://allowed.test');
-    expect(sentMsg.type).toBe('MBS_SEND_TRANSACTION');
+    expect(sentMsg.type).toBe('GET_USER_PROFILE');
     expect(typeof sentMsg.requestId).toBe('string');
 
     window.dispatchEvent(
       new MessageEvent('message', {
         origin: 'https://allowed.test',
-        source: parentWindow,
-        data: {
-          type: 'MBS_SEND_TRANSACTION_RESULT',
-          requestId: sentMsg.requestId,
-          status: 'success',
-          remoteTxnId: 'remote_123',
-        },
+        source: hostWindow,
+        data: { type: 'RESULT', requestId: sentMsg.requestId, result: { profile: { username: 'andres' } } },
       }),
     );
 
     const res = await p;
-    expect(res.remoteTxnId).toBe('remote_123');
+    expect(res.profile.username).toBe('andres');
   });
 });
-

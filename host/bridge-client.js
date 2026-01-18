@@ -17,6 +17,7 @@
 //
 import { uuidv4 } from "../utils/uuid.js";
 import { normalizeAllowedOrigin } from "./bridge-config.js";
+import { normalizeCategoryId } from "../utils/payload.js";
 
 const VERSION = "bridge-client@2026-01-18.payload-debug.v1";
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -69,6 +70,7 @@ function safeJson(obj) {
 
 function mapToCreateExpensePayload(payload) {
   const amount = Number(payload?.paidValue ?? payload?.amount);
+  const categoryId = normalizeCategoryId(payload?.categoryId);
   return {
     amount: Number.isFinite(amount) ? amount : 0,
     currencyCode: payload?.currencyCode ? String(payload.currencyCode) : undefined,
@@ -78,12 +80,13 @@ function mapToCreateExpensePayload(payload) {
       ? String(payload.vendor)
       : undefined,
     occurredAt: payload?.date ? String(payload.date) : undefined,
-    categoryId: payload?.expenseType ? String(payload.expenseType) : undefined,
+    ...(categoryId == null ? {} : { categoryId }),
   };
 }
 
 function mapToCreateIncomePayload(payload) {
   const amount = Number(payload?.paidValue ?? payload?.amount);
+  const categoryId = normalizeCategoryId(payload?.categoryId);
   return {
     amount: Number.isFinite(amount) ? amount : 0,
     currencyCode: payload?.currencyCode ? String(payload.currencyCode) : undefined,
@@ -93,7 +96,7 @@ function mapToCreateIncomePayload(payload) {
       ? String(payload.vendor)
       : undefined,
     occurredAt: payload?.date ? String(payload.date) : undefined,
-    categoryId: payload?.expenseType ? String(payload.expenseType) : undefined,
+    ...(categoryId == null ? {} : { categoryId }),
   };
 }
 
@@ -461,6 +464,15 @@ export function createBridgeClient({
     // DEBUG resultado
     log("TX RESULT ◀︎", { msgType, result: safeJson(result) });
 
+    const rawError = result?.error;
+    if (rawError && typeof rawError === "object") {
+      const code = typeof rawError.code === "string" ? rawError.code : "UNKNOWN";
+      const message = typeof rawError.message === "string" ? rawError.message : "Unknown host error";
+      const e = Object.assign(new Error(message), { code, raw: rawError });
+      e.responsePayload = result;
+      throw e;
+    }
+
     // Adapter para finance-app.js
     const remoteTxnId = pickRemoteTxnId(result, idempotencyKey || uuidv4());
 
@@ -556,4 +568,9 @@ export async function sendTransactionToHost(payload, idempotencyKey, opts = {}) 
 export function __resetBridgeForTests() {
   bridgeSingleton = null;
   bootPromise = null;
+}
+
+export function __setBridgeForTests(bridge) {
+  bridgeSingleton = bridge;
+  bootPromise = Promise.resolve();
 }

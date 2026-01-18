@@ -97,6 +97,12 @@ export default {
   'send.retry': 'Retry',
   'send.success': 'Sent successfully.',
   'send.failed': 'Send failed.',
+  'send.error.title': 'Send failed',
+  'send.error.details': 'Details',
+  'send.error.codeLabel': 'Code',
+  'send.error.messageLabel': 'Message',
+  'send.error.generic': 'Could not send the transaction.',
+  'send.error.category_not_found': 'The selected category was not found in Finanzas.',
   'send.already_sent': 'This movement was already sent.',
   'send.host_not_connected': 'Host not connected.',
   'send.in_progress': 'Send in progress.',
@@ -149,4 +155,11 @@ export default {
   'month.10': 'October',
   'month.11': 'November',
   'month.12': 'December',
+
+  "firstRun.title": "Important",
+  "firstRun.body.1": "The information you record in this mini app is saved on this device.",
+  "firstRun.body.2": "If you clear your browser data or reinstall the browser, you may lose those records.",
+  "firstRun.body.3": "Transactions you send to your Finance dashboard will remain there, because they are saved in your account.",
+  "firstRun.cta": "Got it",
+  "firstRun.dontShowAgain": "Don’t show again"
 };

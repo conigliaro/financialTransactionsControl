@@ -777,6 +777,24 @@ table.data-table tbody tr:hover {
   color: var(--muted-color);
 }
 
+/* ui-dialog: optional checkbox row (first-run) */
+.dialog-check {
+  margin-top: var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 94%, var(--background));
+  min-height: 44px;
+}
+.dialog-check input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
 @media (min-width: 768px) {
   .overlay { align-items: center; }
 }
