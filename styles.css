@@ -820,6 +820,47 @@ table.data-table tbody tr:hover {
   outline-offset: 2px;
 }
 
+/* ui-dialog: phrase display (typed confirmation) */
+.dialog-phrase {
+  margin-top: var(--space-4);
+  display: grid;
+  gap: var(--space-2);
+}
+.dialog-phrase__label {
+  font-weight: 700;
+  color: var(--muted-color);
+  font-size: 13px;
+}
+.dialog-phrase__pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface) 94%, var(--background));
+  min-height: 44px;
+}
+.dialog-phrase__code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  color: var(--text-color);
+  user-select: text;
+}
+.dialog-phrase__copy {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--background);
+  font-weight: 700;
+  font-size: 12px;
+}
+.dialog-phrase__copy:hover {
+  background: color-mix(in srgb, var(--background) 92%, var(--surface));
+}
+
 /* Export dialog status */
 .export-status {
   margin-top: var(--space-3);

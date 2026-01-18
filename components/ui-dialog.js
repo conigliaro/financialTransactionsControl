@@ -67,6 +67,7 @@ class UiDialog extends HTMLElement {
     this._restoreFocusEl = null;
     this._resultMapper = null;
     this._inputHandler = null;
+    this._phraseCopyHandler = null;
   }
 
   connectedCallback() {
@@ -89,6 +90,13 @@ class UiDialog extends HTMLElement {
               <input type="checkbox" id="opt-check" />
               <span id="opt-label"></span>
             </label>
+            <div class="dialog-phrase" id="phrase-row" hidden>
+              <div class="dialog-phrase__label" id="phrase-label"></div>
+              <div class="dialog-phrase__pill">
+                <code class="dialog-phrase__code" id="phrase-code"></code>
+                <button class="icon-btn dialog-phrase__copy" id="phrase-copy" type="button"></button>
+              </div>
+            </div>
             <label class="dialog-field" id="input-row" hidden>
               <span class="dialog-field__label" id="input-label"></span>
               <input class="dialog-field__input" id="input" type="text" />
@@ -127,7 +135,9 @@ class UiDialog extends HTMLElement {
     message,
     phraseLabel,
     phrase,
+    phraseHintLabel = '',
     placeholder = '',
+    copyLabel = '',
     confirmLabel = 'Confirm',
     cancelLabel = 'Cancel',
     variant = 'danger',
@@ -150,7 +160,14 @@ class UiDialog extends HTMLElement {
       this.shadowRoot.getElementById('message').textContent = String(message || '');
       this._setDetails({ summary: '', details: '' });
       this._setOptionRow(null);
+      this._setPhraseRow(null);
       this._removeCopyButton();
+
+      this._setPhraseRow({
+        label: phraseHintLabel,
+        phrase: expected,
+        copyLabel,
+      });
 
       const inputRow = this.shadowRoot.getElementById('input-row');
       const inputLabelEl = this.shadowRoot.getElementById('input-label');
@@ -371,6 +388,7 @@ class UiDialog extends HTMLElement {
       const result = mapper ? mapper(confirmed) : confirmed;
       this._setOptionRow(null);
       this._setInputRow(null);
+      this._setPhraseRow(null);
       this.resolve(result);
     }
   }
@@ -413,6 +431,84 @@ class UiDialog extends HTMLElement {
     label.textContent = String(input.label || '');
     el.value = String(input.value || '');
     el.placeholder = String(input.placeholder || '');
+  }
+
+  async _copyPhrase(text) {
+    const value = String(text || '');
+    if (!value) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        showToast(t('copy.success'), { variant: 'success', duration: 1200 });
+        return;
+      }
+    } catch {
+      // fallback below
+    }
+
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.setAttribute('readonly', 'true');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) {
+        showToast(t('copy.success'), { variant: 'success', duration: 1200 });
+        return;
+      }
+    } catch {
+      // no-op
+    }
+
+    showToast(t('copy.failed'), { variant: 'warning', duration: 1600 });
+  }
+
+  _setPhraseRow(data) {
+    const row = this.shadowRoot.getElementById('phrase-row');
+    const label = this.shadowRoot.getElementById('phrase-label');
+    const code = this.shadowRoot.getElementById('phrase-code');
+    const copyBtn = this.shadowRoot.getElementById('phrase-copy');
+    if (!row || !label || !code || !copyBtn) return;
+
+    if (this._phraseCopyHandler) {
+      try {
+        copyBtn.removeEventListener('click', this._phraseCopyHandler);
+      } catch {
+        // no-op
+      }
+      this._phraseCopyHandler = null;
+    }
+
+    row.hidden = true;
+    label.textContent = '';
+    code.textContent = '';
+    copyBtn.hidden = true;
+    copyBtn.textContent = '';
+    copyBtn.setAttribute('aria-label', '');
+    copyBtn.setAttribute('title', '');
+
+    if (!data) return;
+
+    const phrase = String(data.phrase || '');
+    row.hidden = false;
+    label.textContent = String(data.label || '');
+    code.textContent = phrase;
+
+    const copyLabel = String(data.copyLabel || '');
+    if (copyLabel) {
+      copyBtn.hidden = false;
+      copyBtn.textContent = copyLabel;
+      copyBtn.setAttribute('aria-label', copyLabel);
+      copyBtn.setAttribute('title', copyLabel);
+      this._phraseCopyHandler = () => void this._copyPhrase(phrase);
+      copyBtn.addEventListener('click', this._phraseCopyHandler);
+    }
   }
 }
 

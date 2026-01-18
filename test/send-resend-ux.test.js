@@ -4,9 +4,9 @@ import { IDBFactory } from 'fake-indexeddb';
 vi.mock('../i18n/loader.js', () => ({
   loadTranslations: vi.fn(),
   setLanguage: vi.fn(),
-  getActiveLang: () => 'en',
+  getActiveLang: () => 'es',
   t: (key) => {
-    if (key === 'send.resendConfirm.phrase') return 'confirm send';
+    if (key === 'send.resendConfirm.phrase') return 'confirmo enviar';
     if (key === 'send.alreadySent.sentAt') return 'Sent on';
     if (key === 'send.alreadySent.remoteId') return 'Remote transaction id';
     return key;
@@ -142,6 +142,7 @@ describe('Resend UX + sending indicator', () => {
 
     await vi.waitFor(() => expect(dialog.style.display).toBe('flex'));
     expect(dialog.shadowRoot.getElementById('title')?.textContent).toBe('send.resendConfirm.title');
+    expect(dialog.shadowRoot.getElementById('phrase-code')?.textContent).toBe('confirmo enviar');
 
     const input = dialog.shadowRoot.getElementById('input');
     const confirm = dialog.shadowRoot.getElementById('confirm-btn');
@@ -151,7 +152,7 @@ describe('Resend UX + sending indicator', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     expect(confirm.disabled).toBe(true);
 
-    input.value = 'confirm send';
+    input.value = 'confirmo enviar';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     expect(confirm.disabled).toBe(false);
 
@@ -227,4 +228,3 @@ describe('Resend UX + sending indicator', () => {
     });
   });
 });
-
