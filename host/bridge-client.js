@@ -1,3 +1,5 @@
+// host/bridge-client.js
+
 import { uuidv4 } from '../utils/uuid.js';
 import { ALLOWED_ORIGINS } from './bridge-config.js';
 
